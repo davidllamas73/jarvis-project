@@ -294,3 +294,25 @@ extension SpeechRecognitionManagerSimple: SFSpeechRecognizerDelegate {
         print(available ? "✅ Speech recognizer available" : "⚠️ Speech recognizer unavailable")
     }
 }
+
+// MARK: - Errors
+
+enum SpeechError: LocalizedError {
+    case notAuthorized
+    case notAvailable
+    case recognitionFailed
+    case audioEngineFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .notAuthorized:
+            return "Speech recognition not authorized. Please grant access in System Preferences > Security & Privacy > Speech Recognition."
+        case .notAvailable:
+            return "Speech recognition not available for this language"
+        case .recognitionFailed:
+            return "Speech recognition failed"
+        case .audioEngineFailed:
+            return "Audio engine failed to start"
+        }
+    }
+}
