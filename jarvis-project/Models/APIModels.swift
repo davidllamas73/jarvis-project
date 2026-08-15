@@ -212,15 +212,28 @@ struct AnyCodable: Codable {
     }
 }
 // MARK: - Code Execution Models
+
+struct FileAttachment: Codable {
+    let filename: String
+    let contentBase64: String
+
+    enum CodingKeys: String, CodingKey {
+        case filename
+        case contentBase64 = "content_base64"
+    }
+}
+
 struct CodeExecuteRequest: Codable {
     let query: String
     let sessionId: String
     let maxTokens: Int?
+    let attachments: [FileAttachment]?
 
     enum CodingKeys: String, CodingKey {
         case query
         case sessionId = "session_id"
         case maxTokens = "max_tokens"
+        case attachments
     }
 }
 

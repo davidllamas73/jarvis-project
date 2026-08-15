@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// ContentView using Speech Recognition with YOUR actual services
 /// This version uses JarvisAPIClient, AudioManager, and SpeechRecognitionManager
@@ -7,6 +8,7 @@ struct ContentView: View {
 
     @StateObject private var speechManager = SpeechRecognitionManagerSimple()
     @StateObject private var ttsManager = NativeTTSManager()
+    @StateObject private var wakeWordManager = WakeWordManager()
     private let apiClient = JarvisAPIClient.shared
 
     @State private var sessionId = UUID().uuidString
@@ -15,6 +17,11 @@ struct ContentView: View {
     @State private var chunksAvailable: Int?
     @State private var errorMessage: String?
     @State private var showError = false
+
+    // Text prompt input
+    @State private var promptText = ""
+    @State private var pendingAttachments: [PendingAttachment] = []
+    @State private var showFileImporter = false
 
     // MARK: - Body
 
@@ -28,6 +35,9 @@ struct ContentView: View {
             // Main Voice Interface
             voiceInterfaceView
 
+            // Text Prompt Input
+            promptInputView
+
             Spacer()
 
             // Response Display
@@ -39,14 +49,23 @@ struct ContentView: View {
             statusView
         }
         .padding()
-        .frame(minWidth: 400, minHeight: 500)
+        .frame(minWidth: 420, minHeight: 560)
         .task {
             await loadHealthStatus()
+            setupWakeWord()
+            wakeWordManager.startListening()
         }
         .alert("Error", isPresented: $showError) {
             Button("OK", role: .cancel) { }
         } message: {
             Text(errorMessage ?? "Unknown error")
+        }
+        .fileImporter(
+            isPresented: $showFileImporter,
+            allowedContentTypes: [.item],
+            allowsMultipleSelection: true
+        ) { result in
+            handleFileImport(result)
         }
     }
 
@@ -63,12 +82,23 @@ struct ContentView: View {
                     .foregroundColor(.secondary)
             }
 
-            if apiClient.isAuthenticated {
+            HStack(spacing: 12) {
+                if apiClient.isAuthenticated {
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(Color.green)
+                            .frame(width: 8, height: 8)
+                        Text("Connected")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                }
+
                 HStack(spacing: 4) {
                     Circle()
-                        .fill(Color.green)
+                        .fill(wakeWordManager.isAwake ? Color.blue : Color.gray)
                         .frame(width: 8, height: 8)
-                    Text("Connected")
+                    Text(wakeWordManager.isAwake ? "Awake" : "Say \"Hey Jarvis\"")
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 }
@@ -158,6 +188,73 @@ struct ContentView: View {
         .transition(.opacity)
     }
 
+    // MARK: - Prompt Input View
+
+    private var promptInputView: some View {
+        VStack(spacing: 8) {
+            if !pendingAttachments.isEmpty {
+                attachmentChipsView
+            }
+
+            HStack(spacing: 8) {
+                Button(action: { showFileImporter = true }) {
+                    Image(systemName: "paperclip")
+                        .font(.system(size: 16))
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Attach a file")
+
+                TextField("Type a message to Jarvis...", text: $promptText, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .lineLimit(1...4)
+                    .onSubmit {
+                        submitPrompt()
+                    }
+
+                Button(action: submitPrompt) {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.system(size: 22))
+                        .foregroundColor(canSubmitPrompt ? .blue : .secondary.opacity(0.4))
+                }
+                .buttonStyle(.plain)
+                .disabled(!canSubmitPrompt)
+            }
+            .padding(10)
+            .background(Color.secondary.opacity(0.08))
+            .cornerRadius(10)
+        }
+    }
+
+    private var attachmentChipsView: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(pendingAttachments) { attachment in
+                    HStack(spacing: 4) {
+                        Image(systemName: "doc")
+                            .font(.caption2)
+                        Text(attachment.filename)
+                            .font(.caption2)
+                            .lineLimit(1)
+                        Button(action: { removeAttachment(attachment) }) {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.caption2)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.secondary.opacity(0.15))
+                    .cornerRadius(6)
+                }
+            }
+        }
+    }
+
+    private var canSubmitPrompt: Bool {
+        !promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isProcessing
+    }
+
     // MARK: - Response View
 
     private var responseView: some View {
@@ -199,7 +296,7 @@ struct ContentView: View {
                 }
                 .foregroundColor(.blue)
             } else {
-                Text(speechManager.isRecording ? "Tap to stop" : "Tap microphone to speak")
+                Text(speechManager.isRecording ? "Tap to stop" : "Tap microphone or type to talk to Jarvis")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -258,7 +355,28 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - Actions
+    // MARK: - Wake Word
+
+    private func setupWakeWord() {
+        wakeWordManager.onWake = {
+            print("👋 Waking up - listening for your question")
+            guard !speechManager.isRecording, !isProcessing else { return }
+            Task {
+                await startVoiceInput()
+            }
+        }
+        wakeWordManager.onSleep = {
+            print("😴 Going back to sleep")
+            ttsManager.stop()
+            if speechManager.isRecording {
+                Task {
+                    await stopAndProcess()
+                }
+            }
+        }
+    }
+
+    // MARK: - Voice Actions
 
     private func handleMicrophoneButtonTap() {
         if speechManager.isRecording {
@@ -278,14 +396,19 @@ struct ContentView: View {
         do {
             print("🎤 Starting voice recording...")
 
+            // Wake-word listener and query recognizer share one mic - hand it off cleanly
+            wakeWordManager.suspendForActiveQuery()
+
             // Start recording (doesn't set isProcessing yet)
             try await speechManager.startRecording()
 
             print("✅ Recording started - speak now!")
 
         } catch let error as SpeechError {
+            wakeWordManager.resumeAfterActiveQuery()
             await handleError(error.localizedDescription ?? "Failed to start recording")
         } catch {
+            wakeWordManager.resumeAfterActiveQuery()
             await handleError("Recording error: \(error.localizedDescription)")
         }
     }
@@ -303,37 +426,107 @@ struct ContentView: View {
             guard !transcribedText.isEmpty else {
                 print("⚠️ No speech detected")
                 isProcessing = false
+                wakeWordManager.resumeAfterActiveQuery()
                 return
             }
 
             print("✅ Recognized: '\(transcribedText)'")
 
-            // Send query to Jarvis API
-            print("📤 Sending to Jarvis: '\(transcribedText)'")
-            let codeResponse = try await apiClient.executeCode(
-                query: transcribedText,
-                sessionId: sessionId
-            )
+            try await sendQuery(transcribedText, attachments: [])
 
-            await MainActor.run {
-                currentResponse = codeResponse.answer
-            }
-
-            // Speak response using native TTS (instant, no API call)
-            print("🔊 Speaking response with native TTS...")
-            await ttsManager.speak(codeResponse.answer)
-
-            print("✅ Voice workflow complete!")
-            
-            isProcessing = false
+            wakeWordManager.resumeAfterActiveQuery()
 
         } catch let error as SpeechError {
+            wakeWordManager.resumeAfterActiveQuery()
             await handleError(error.localizedDescription ?? "Speech recognition failed")
         } catch let error as APIError {
+            wakeWordManager.resumeAfterActiveQuery()
             await handleError(error.localizedDescription ?? "API error")
         } catch {
+            wakeWordManager.resumeAfterActiveQuery()
             await handleError("Voice input error: \(error.localizedDescription)")
         }
+    }
+
+    // MARK: - Text Prompt Actions
+
+    private func submitPrompt() {
+        let text = promptText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !isProcessing else { return }
+
+        let attachments = pendingAttachments
+        promptText = ""
+        pendingAttachments = []
+
+        Task {
+            do {
+                isProcessing = true
+                currentResponse = ""
+                try await sendQuery(text, attachments: attachments)
+            } catch let error as APIError {
+                await handleError(error.localizedDescription ?? "API error")
+            } catch {
+                await handleError("Request error: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Shared path for both voice and text queries: send to Jarvis, speak the reply.
+    private func sendQuery(_ text: String, attachments: [PendingAttachment]) async throws {
+        print("📤 Sending to Jarvis: '\(text)'")
+
+        let apiAttachments = attachments.map {
+            FileAttachment(filename: $0.filename, contentBase64: $0.base64Content)
+        }
+
+        let codeResponse = try await apiClient.executeCode(
+            query: text,
+            sessionId: sessionId,
+            attachments: apiAttachments.isEmpty ? nil : apiAttachments
+        )
+
+        await MainActor.run {
+            currentResponse = codeResponse.answer
+        }
+
+        // Speak response using native TTS (instant, no API call, no audio files written)
+        print("🔊 Speaking response with native TTS...")
+        await ttsManager.speak(codeResponse.answer)
+
+        print("✅ Voice workflow complete!")
+
+        isProcessing = false
+    }
+
+    // MARK: - File Attachments
+
+    private func handleFileImport(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            for url in urls {
+                let didAccess = url.startAccessingSecurityScopedResource()
+                defer {
+                    if didAccess { url.stopAccessingSecurityScopedResource() }
+                }
+
+                do {
+                    let data = try Data(contentsOf: url)
+                    let attachment = PendingAttachment(
+                        filename: url.lastPathComponent,
+                        base64Content: data.base64EncodedString()
+                    )
+                    pendingAttachments.append(attachment)
+                } catch {
+                    print("❌ Failed to read attached file \(url.lastPathComponent): \(error)")
+                }
+            }
+        case .failure(let error):
+            print("❌ File import failed: \(error)")
+        }
+    }
+
+    private func removeAttachment(_ attachment: PendingAttachment) {
+        pendingAttachments.removeAll { $0.id == attachment.id }
     }
 
     @MainActor
@@ -345,9 +538,16 @@ struct ContentView: View {
     }
 }
 
+// MARK: - Pending Attachment
+
+struct PendingAttachment: Identifiable {
+    let id = UUID()
+    let filename: String
+    let base64Content: String
+}
+
 // MARK: - Preview
 
 #Preview {
     ContentView()
 }
-

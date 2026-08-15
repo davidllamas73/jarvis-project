@@ -30,8 +30,9 @@ import Combine
 
           let utterance = AVSpeechUtterance(string: text)
 
-          // Use high-quality English voice (Samantha on macOS)
-          utterance.voice = AVSpeechSynthesisVoice(identifier: "com.apple.voice.compact.en-US.Samantha")
+          // Jamie (Premium) UK - identifier resolves to "Malcolm" internally, verified via:
+          // swift -e 'AVSpeechSynthesisVoice.speechVoices()...' on the target Mac
+          utterance.voice = AVSpeechSynthesisVoice(identifier: "com.apple.voice.premium.en-GB.Malcolm")
 
           // Configure for natural speech
           utterance.rate = rate  // 0.52 is slightly faster than default but natural

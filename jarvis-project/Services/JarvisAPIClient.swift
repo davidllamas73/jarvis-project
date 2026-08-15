@@ -176,9 +176,9 @@ class JarvisAPIClient: ObservableObject {
         return try await makeRequest(endpoint: "/search/chat", method: "POST", body: body)
     }
     
-    func executeCode(query: String, sessionId: String, maxTokens: Int? = nil) async throws -> CodeExecuteResponse
+    func executeCode(query: String, sessionId: String, maxTokens: Int? = nil, attachments: [FileAttachment]? = nil) async throws -> CodeExecuteResponse
     {
-        let request = CodeExecuteRequest(query: query, sessionId: sessionId, maxTokens: maxTokens)
+        let request = CodeExecuteRequest(query: query, sessionId: sessionId, maxTokens: maxTokens, attachments: attachments)
         let encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase
         let body = try encoder.encode(request)
