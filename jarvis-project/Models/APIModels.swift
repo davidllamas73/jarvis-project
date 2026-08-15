@@ -256,3 +256,11 @@ struct CodeExecuteResponse: Codable {
         case executionTimeMs = "execution_time_ms"
     }
 }
+
+// MARK: - Pending Attachment (client-side, not sent as-is)
+
+struct PendingAttachment: Identifiable {
+    let id = UUID()
+    let filename: String
+    let base64Content: String
+}

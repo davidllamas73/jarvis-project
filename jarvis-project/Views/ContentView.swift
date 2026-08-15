@@ -538,14 +538,6 @@ struct ContentView: View {
     }
 }
 
-// MARK: - Pending Attachment
-
-struct PendingAttachment: Identifiable {
-    let id = UUID()
-    let filename: String
-    let base64Content: String
-}
-
 // MARK: - Preview
 
 #Preview {
