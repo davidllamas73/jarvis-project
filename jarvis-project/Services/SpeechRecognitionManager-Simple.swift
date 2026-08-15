@@ -46,6 +46,8 @@ class SpeechRecognitionManagerSimple: NSObject, ObservableObject {
             throw SpeechError.notAuthorized
         }
 
+        try configureAudioSession()
+
         // Create temporary file
         let tempDir = FileManager.default.temporaryDirectory
         let fileName = "jarvis_speech_\(UUID().uuidString).m4a"
@@ -229,6 +231,16 @@ class SpeechRecognitionManagerSimple: NSObject, ObservableObject {
         recordingStartTime = nil
     }
 
+    // MARK: - Audio Session
+
+    private func configureAudioSession() throws {
+        #if os(iOS)
+        let session = AVAudioSession.sharedInstance()
+        try session.setCategory(.playAndRecord, mode: .measurement, options: [.duckOthers, .defaultToSpeaker])
+        try session.setActive(true, options: .notifyOthersOnDeactivation)
+        #endif
+    }
+
     // MARK: - Authorization
 
     private func requestSpeechAuthorization() async -> Bool {
@@ -248,6 +260,12 @@ class SpeechRecognitionManagerSimple: NSObject, ObservableObject {
             return await AVCaptureDevice.requestAccess(for: .audio)
         default:
             return false
+        }
+        #elseif os(iOS)
+        return await withCheckedContinuation { continuation in
+            AVAudioApplication.requestRecordPermission { granted in
+                continuation.resume(returning: granted)
+            }
         }
         #else
         return true

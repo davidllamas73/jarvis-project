@@ -83,6 +83,13 @@ class WakeWordManager: NSObject, ObservableObject {
         request.requiresOnDeviceRecognition = true // keep wake-word audio on-device
         recognitionRequest = request
 
+        do {
+            try configureAudioSession()
+        } catch {
+            print("❌ WakeWordManager: audio session failed to configure: \(error)")
+            return
+        }
+
         let inputNode = audioEngine.inputNode
         let format = inputNode.outputFormat(forBus: 0)
 
@@ -135,6 +142,14 @@ class WakeWordManager: NSObject, ObservableObject {
         recognitionRequest = nil
         recognitionTask?.cancel()
         recognitionTask = nil
+    }
+
+    private func configureAudioSession() throws {
+        #if os(iOS)
+        let session = AVAudioSession.sharedInstance()
+        try session.setCategory(.playAndRecord, mode: .measurement, options: [.duckOthers, .defaultToSpeaker, .allowBluetooth])
+        try session.setActive(true, options: .notifyOthersOnDeactivation)
+        #endif
     }
 
     private func restartSessionIfNeeded() {
