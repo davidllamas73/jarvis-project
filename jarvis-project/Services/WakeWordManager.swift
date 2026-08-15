@@ -93,6 +93,14 @@ class WakeWordManager: NSObject, ObservableObject {
         let inputNode = audioEngine.inputNode
         let format = inputNode.outputFormat(forBus: 0)
 
+        // A zero-channel format means the audio session isn't actually active yet -
+        // installTap with an invalid format crashes AVAudioEngine with an uncatchable
+        // NSException rather than a throwable error, so this guard is load-bearing.
+        guard format.channelCount > 0, format.sampleRate > 0 else {
+            print("❌ WakeWordManager: invalid input format (\(format)), aborting session")
+            return
+        }
+
         inputNode.removeTap(onBus: 0)
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
             self?.recognitionRequest?.append(buffer)
@@ -197,6 +205,12 @@ class WakeWordManager: NSObject, ObservableObject {
             return await AVCaptureDevice.requestAccess(for: .audio)
         default:
             return false
+        }
+        #elseif os(iOS)
+        return await withCheckedContinuation { continuation in
+            AVAudioApplication.requestRecordPermission { granted in
+                continuation.resume(returning: granted)
+            }
         }
         #else
         return true
