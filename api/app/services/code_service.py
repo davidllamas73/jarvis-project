@@ -673,11 +673,19 @@ END OF WIKI INDEX. You now have full knowledge of David's wiki structure.""",
         """
         start_time = time.time()
 
+        # Tracked outside the try block so the finally clause can log/save whatever
+        # was accumulated even if the client disconnects mid-stream (a disconnect
+        # raises at the `yield` inside the streaming loop below - without this,
+        # the turn would silently vanish from conversation history and the
+        # activity log instead of being recorded as a partial response).
+        response_text = ""
+        tool_calls: List[ToolCall] = []
+        files_modified: List[str] = []
+        final_content = None
+        stream_completed = False
+
         try:
             system_blocks, messages = await self._build_prompt_context(session_id, query)
-
-            tool_calls = []
-            files_modified = []
 
             # Intermediate turns: identical to execute()'s loop, non-streaming,
             # since tool calls must fully resolve before Claude can keep going.
@@ -738,8 +746,6 @@ END OF WIKI INDEX. You now have full knowledge of David's wiki structure.""",
 
             # Final turn: stream the text as it's generated. If this last turn
             # somehow requests a tool (edge case), fall back to its non-streamed text.
-            response_text = ""
-
             if response.stop_reason == "tool_use":
                 for content_block in response.content:
                     if hasattr(content_block, "text"):
@@ -761,26 +767,8 @@ END OF WIKI INDEX. You now have full knowledge of David's wiki structure.""",
                     final_message = await stream.get_final_message()
                     final_content = final_message.content
 
-            # Store conversation
-            if session_id not in self.conversations:
-                self.conversations[session_id] = []
-
-            self.conversations[session_id].append({"role": "user", "content": query})
-            self.conversations[session_id].append({"role": "assistant", "content": final_content})
-            self.conversations[session_id] = self.conversations[session_id][-self.max_history_turns * 2:]
-
-            from app.services.activity_service import activity_service
+            stream_completed = True
             execution_time_ms = int((time.time() - start_time) * 1000)
-
-            await activity_service.log_conversation(
-                session_id=session_id,
-                query=query,
-                response=response_text,
-                tool_calls=len(tool_calls),
-                duration_ms=execution_time_ms
-            )
-
-            await self._update_dialogue_state_from_conversation(query, response_text)
 
             print(f"⚡ Stream execution: {execution_time_ms}ms, {len(tool_calls)} tools, {len(files_modified)} files")
 
@@ -794,7 +782,43 @@ END OF WIKI INDEX. You now have full knowledge of David's wiki structure.""",
 
         except Exception as e:
             print(f"❌ Stream execution error: {str(e)}")
-            yield {"type": "error", "message": str(e)}
+            try:
+                yield {"type": "error", "message": str(e)}
+            except Exception:
+                # Client is already gone (e.g. disconnected mid-stream) - the error
+                # event can't be delivered, but the finally block below still runs
+                # and records whatever partial response we'd accumulated.
+                pass
+
+        finally:
+            # Runs on both clean completion and disconnect/error, so a cut-off
+            # answer is still recorded as a partial turn instead of vanishing
+            # from conversation history and the activity log.
+            if final_content is None:
+                final_content = [{"type": "text", "text": response_text}] if response_text else []
+
+            if session_id not in self.conversations:
+                self.conversations[session_id] = []
+
+            self.conversations[session_id].append({"role": "user", "content": query})
+            self.conversations[session_id].append({"role": "assistant", "content": final_content})
+            self.conversations[session_id] = self.conversations[session_id][-self.max_history_turns * 2:]
+
+            if response_text:
+                from app.services.activity_service import activity_service
+                execution_time_ms = int((time.time() - start_time) * 1000)
+
+                log_note = response_text if stream_completed else f"{response_text} [partial - connection dropped]"
+
+                await activity_service.log_conversation(
+                    session_id=session_id,
+                    query=query,
+                    response=log_note,
+                    tool_calls=len(tool_calls),
+                    duration_ms=execution_time_ms
+                )
+
+                await self._update_dialogue_state_from_conversation(query, response_text)
 
 
 # Singleton instance
