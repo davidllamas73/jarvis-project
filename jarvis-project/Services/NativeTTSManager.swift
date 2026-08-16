@@ -21,6 +21,18 @@ import Combine
 class NativeTTSManager: NSObject, ObservableObject {
     private let synthesizer = AVSpeechSynthesizer()
 
+    /// Jamie (Premium) UK - identifier resolves to "Malcolm" internally, verified via:
+    /// swift -e 'AVSpeechSynthesisVoice.speechVoices()...' on the target Mac
+    ///
+    /// Looked up ONCE here in init() (a plain synchronous context) rather than fresh
+    /// on every utterance. AVSpeechSynthesisVoice(identifier:) makes a synchronous
+    /// call into Apple's Accessibility subsystem internally - constructing it inside
+    /// an async Task (as queueUtterance() used to, once per sentence while streaming)
+    /// is a confirmed Apple-side trigger for the "unsafeForcedSync called from Swift
+    /// Concurrent context" diagnostic and the Hang Risk warning that came with it
+    /// (Apple DTS, developer.apple.com/forums/thread/802423; filed as FB20484368).
+    private static let voice = AVSpeechSynthesisVoice(identifier: "com.apple.voice.premium.en-GB.Malcolm")
+
     @Published var isSpeaking = false
 
     override init() {
@@ -36,10 +48,7 @@ class NativeTTSManager: NSObject, ObservableObject {
         }
 
         let utterance = AVSpeechUtterance(string: text)
-
-        // Jamie (Premium) UK - identifier resolves to "Malcolm" internally, verified via:
-        // swift -e 'AVSpeechSynthesisVoice.speechVoices()...' on the target Mac
-        utterance.voice = AVSpeechSynthesisVoice(identifier: "com.apple.voice.premium.en-GB.Malcolm")
+        utterance.voice = Self.voice
 
         // Configure for natural speech
         utterance.rate = rate  // 0.52 is slightly faster than default but natural
@@ -135,7 +144,7 @@ class NativeTTSManager: NSObject, ObservableObject {
         guard generation == streamGeneration else { return }
 
         let utterance = AVSpeechUtterance(string: text)
-        utterance.voice = AVSpeechSynthesisVoice(identifier: "com.apple.voice.premium.en-GB.Malcolm")
+        utterance.voice = Self.voice
         utterance.rate = rate
         utterance.pitchMultiplier = pitch
         utterance.volume = 1.0
