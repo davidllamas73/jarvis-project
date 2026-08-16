@@ -184,7 +184,66 @@ class JarvisAPIClient: ObservableObject {
         let body = try encoder.encode(request)
         return try await makeRequest(endpoint: "/code/execute", method: "POST", body: body, requiresAuth: false)
     }
-    
+
+    /// Streams the response as it's generated (Server-Sent Events) instead of waiting
+    /// for the full answer. Lets the caller start speaking/rendering text immediately.
+    func executeCodeStream(query: String, sessionId: String, maxTokens: Int? = nil, attachments: [FileAttachment]? = nil) -> AsyncThrowingStream<StreamEvent, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    guard let url = URL(string: "\(self.baseURL)/code/execute/stream") else {
+                        continuation.finish(throwing: APIError.invalidURL)
+                        return
+                    }
+
+                    let request = CodeExecuteRequest(query: query, sessionId: sessionId, maxTokens: maxTokens, attachments: attachments)
+                    let encoder = JSONEncoder()
+                    encoder.keyEncodingStrategy = .convertToSnakeCase
+                    let body = try encoder.encode(request)
+
+                    var urlRequest = URLRequest(url: url)
+                    urlRequest.httpMethod = "POST"
+                    urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                    urlRequest.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+                    urlRequest.httpBody = body
+
+                    let (byteStream, response) = try await self.urlSession.bytes(for: urlRequest)
+
+                    guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
+                        continuation.finish(throwing: APIError.invalidResponse)
+                        return
+                    }
+
+                    for try await line in byteStream.lines {
+                        guard line.hasPrefix("data: ") else { continue }
+                        let jsonString = String(line.dropFirst("data: ".count))
+                        guard let jsonData = jsonString.data(using: .utf8),
+                              let event = StreamEvent.parse(jsonData) else { continue }
+
+                        continuation.yield(event)
+
+                        if case .done = event {
+                            continuation.finish()
+                            return
+                        }
+                        if case .error(let message) = event {
+                            continuation.finish(throwing: APIError.serverError(message))
+                            return
+                        }
+                    }
+
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+
+            continuation.onTermination = { _ in
+                task.cancel()
+            }
+        }
+    }
+
     // MARK: - Automation
 
     func generateInterviewBrief(company: String, person: String? = nil, role: String) async throws -> InterviewBrief {

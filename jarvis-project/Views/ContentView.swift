@@ -471,27 +471,54 @@ struct ContentView: View {
         }
     }
 
-    /// Shared path for both voice and text queries: send to Jarvis, speak the reply.
+    /// Shared path for both voice and text queries: stream the reply from Jarvis and
+    /// speak it sentence-by-sentence as it arrives, instead of waiting for the full
+    /// answer. This is what makes responses feel conversational instead of stilted.
     private func sendQuery(_ text: String, attachments: [PendingAttachment]) async throws {
-        print("📤 Sending to Jarvis: '\(text)'")
+        print("📤 Sending to Jarvis (streaming): '\(text)'")
 
         let apiAttachments = attachments.map {
             FileAttachment(filename: $0.filename, contentBase64: $0.base64Content)
         }
 
-        let codeResponse = try await apiClient.executeCode(
+        let eventStream = apiClient.executeCodeStream(
             query: text,
             sessionId: sessionId,
             attachments: apiAttachments.isEmpty ? nil : apiAttachments
         )
 
-        await MainActor.run {
-            currentResponse = codeResponse.answer
+        // Bridge StreamEvent -> plain text chunks for the TTS queue, while updating
+        // the on-screen response live as each chunk arrives.
+        let (textChunks, textContinuation) = AsyncThrowingStream<String, Error>.makeStream()
+
+        let forwardingTask = Task {
+            do {
+                for try await event in eventStream {
+                    switch event {
+                    case .textDelta(let delta):
+                        await MainActor.run {
+                            currentResponse += delta
+                        }
+                        textContinuation.yield(delta)
+                    case .done:
+                        textContinuation.finish()
+                    case .error(let message):
+                        textContinuation.finish(throwing: APIError.serverError(message))
+                    }
+                }
+                textContinuation.finish()
+            } catch {
+                textContinuation.finish(throwing: error)
+            }
         }
 
-        // Speak response using native TTS (instant, no API call, no audio files written)
-        print("🔊 Speaking response with native TTS...")
-        await ttsManager.speak(codeResponse.answer)
+        await MainActor.run {
+            currentResponse = ""
+        }
+
+        print("🔊 Speaking response as it streams in...")
+        try await ttsManager.speakStream(textChunks)
+        forwardingTask.cancel()
 
         print("✅ Voice workflow complete!")
 

@@ -406,20 +406,46 @@ struct ContentView: View {
         }
     }
 
+    /// Streams the reply and speaks it sentence-by-sentence as it arrives, instead
+    /// of waiting for the full answer - see the macOS ContentView for the same pattern.
     private func sendQuery(_ text: String, attachments: [PendingAttachment]) async throws {
         let apiAttachments = attachments.map {
             FileAttachment(filename: $0.filename, contentBase64: $0.base64Content)
         }
 
-        let codeResponse = try await apiClient.executeCode(
+        let eventStream = apiClient.executeCodeStream(
             query: text,
             sessionId: sessionId,
             attachments: apiAttachments.isEmpty ? nil : apiAttachments
         )
 
-        await MainActor.run { currentResponse = codeResponse.answer }
+        let (textChunks, textContinuation) = AsyncThrowingStream<String, Error>.makeStream()
 
-        await ttsManager.speak(codeResponse.answer)
+        let forwardingTask = Task {
+            do {
+                for try await event in eventStream {
+                    switch event {
+                    case .textDelta(let delta):
+                        await MainActor.run {
+                            currentResponse += delta
+                        }
+                        textContinuation.yield(delta)
+                    case .done:
+                        textContinuation.finish()
+                    case .error(let message):
+                        textContinuation.finish(throwing: APIError.serverError(message))
+                    }
+                }
+                textContinuation.finish()
+            } catch {
+                textContinuation.finish(throwing: error)
+            }
+        }
+
+        await MainActor.run { currentResponse = "" }
+
+        try await ttsManager.speakStream(textChunks)
+        forwardingTask.cancel()
 
         isProcessing = false
     }

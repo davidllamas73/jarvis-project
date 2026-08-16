@@ -257,6 +257,41 @@ struct CodeExecuteResponse: Codable {
     }
 }
 
+// MARK: - Streaming Events (SSE from /code/execute/stream)
+
+enum StreamEvent {
+    case textDelta(String)
+    case done(CodeExecuteResponse)
+    case error(String)
+
+    /// Parses one SSE `data: {...}` JSON payload into a typed event.
+    static func parse(_ jsonData: Data) -> StreamEvent? {
+        guard let object = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+              let type = object["type"] as? String else {
+            return nil
+        }
+
+        switch type {
+        case "text_delta":
+            guard let text = object["text"] as? String else { return nil }
+            return .textDelta(text)
+
+        case "error":
+            let message = object["message"] as? String ?? "Unknown streaming error"
+            return .error(message)
+
+        case "done":
+            guard let decoded = try? JSONDecoder().decode(CodeExecuteResponse.self, from: jsonData) else {
+                return nil
+            }
+            return .done(decoded)
+
+        default:
+            return nil
+        }
+    }
+}
+
 // MARK: - Pending Attachment (client-side, not sent as-is)
 
 struct PendingAttachment: Identifiable {
