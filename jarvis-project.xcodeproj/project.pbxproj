@@ -11,6 +11,20 @@
 		F368C35C3025D4CE00D7B4E9 /* jarvis-project.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "jarvis-project.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		F367547C3030A28500D02B8F /* Exceptions for "jarvis-project" folder in "JarvisiOS" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Models/APIModels.swift,
+				Services/JarvisAPIClient.swift,
+				Services/NativeTTSManager.swift,
+				"Services/SpeechRecognitionManager-Simple.swift",
+				Services/WakeWordManager.swift,
+			);
+			target = F367546F3030A09200D02B8F /* JarvisiOS */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		F36754713030A09200D02B8F /* JarvisiOS */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
@@ -19,6 +33,9 @@
 		};
 		F368C35E3025D4CE00D7B4E9 /* jarvis-project */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				F367547C3030A28500D02B8F /* Exceptions for "jarvis-project" folder in "JarvisiOS" target */,
+			);
 			path = "jarvis-project";
 			sourceTree = "<group>";
 		};
