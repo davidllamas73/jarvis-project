@@ -11,6 +11,13 @@ import Combine
 
 /// Native text-to-speech using AVSpeechSynthesizer
 /// Zero latency, no API calls, works offline
+///
+/// Everything here is @MainActor-isolated on purpose: AVSpeechSynthesizerDelegate
+/// callbacks arrive on an internal AVFoundation thread, not the main thread, and
+/// pendingUtteranceCount/isSpeaking used to be touched from both that thread and
+/// the calling Task without synchronization - a real data race that Xcode was
+/// flagging as a "Hang Risk" (QoS priority inversion) during streaming speech.
+@MainActor
 class NativeTTSManager: NSObject, ObservableObject {
     private let synthesizer = AVSpeechSynthesizer()
 
@@ -39,10 +46,7 @@ class NativeTTSManager: NSObject, ObservableObject {
         utterance.pitchMultiplier = pitch
         utterance.volume = 1.0
 
-        await MainActor.run {
-            isSpeaking = true
-        }
-
+        isSpeaking = true
         synthesizer.speak(utterance)
 
         print("Native TTS speaking: '\(text.prefix(50))...'")
@@ -60,8 +64,8 @@ class NativeTTSManager: NSObject, ObservableObject {
     func stop() {
         if synthesizer.isSpeaking {
             synthesizer.stopSpeaking(at: .immediate)
-            isSpeaking = false
         }
+        isSpeaking = false
         pendingUtteranceCount = 0
         allTextQueuedContinuation?.resume()
         allTextQueuedContinuation = nil
@@ -124,50 +128,53 @@ class NativeTTSManager: NSObject, ObservableObject {
         utterance.volume = 1.0
 
         pendingUtteranceCount += 1
-        Task { @MainActor in
-            isSpeaking = true
-        }
+        isSpeaking = true
         synthesizer.speak(utterance)
-    }
-}
-
-// MARK: - AVSpeechSynthesizerDelegate
-
-extension NativeTTSManager: AVSpeechSynthesizerDelegate {
-    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
-        DispatchQueue.main.async {
-            self.isSpeaking = true
-        }
-        print("TTS started")
-    }
-
-    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        print("TTS finished")
-        speechContinuation?.resume()
-        speechContinuation = nil
-        finishOneQueuedUtterance()
-    }
-
-    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        print("TTS cancelled")
-        speechContinuation?.resume()
-        speechContinuation = nil
-        finishOneQueuedUtterance()
     }
 
     /// Shared by didFinish/didCancel: decrements the queue count and, once every
     /// queued sentence from a speakStream() call has completed, marks speaking
     /// done and resumes whoever's awaiting the full stream.
     private func finishOneQueuedUtterance() {
-        DispatchQueue.main.async {
-            if self.pendingUtteranceCount > 0 {
-                self.pendingUtteranceCount -= 1
-            }
-            if self.pendingUtteranceCount == 0 {
-                self.isSpeaking = false
-                self.allTextQueuedContinuation?.resume()
-                self.allTextQueuedContinuation = nil
-            }
+        if pendingUtteranceCount > 0 {
+            pendingUtteranceCount -= 1
+        }
+        if pendingUtteranceCount == 0 {
+            isSpeaking = false
+            allTextQueuedContinuation?.resume()
+            allTextQueuedContinuation = nil
+        }
+    }
+}
+
+// MARK: - AVSpeechSynthesizerDelegate
+
+extension NativeTTSManager: AVSpeechSynthesizerDelegate {
+    // AVSpeechSynthesizerDelegate callbacks arrive on an AVFoundation-owned thread,
+    // not necessarily the main thread. Hop to the main actor before touching any
+    // @MainActor state - this is what actually fixes the data race/hang risk.
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
+        print("TTS started")
+        Task { @MainActor in
+            self.isSpeaking = true
+        }
+    }
+
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        print("TTS finished")
+        Task { @MainActor in
+            self.speechContinuation?.resume()
+            self.speechContinuation = nil
+            self.finishOneQueuedUtterance()
+        }
+    }
+
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        print("TTS cancelled")
+        Task { @MainActor in
+            self.speechContinuation?.resume()
+            self.speechContinuation = nil
+            self.finishOneQueuedUtterance()
         }
     }
 }
