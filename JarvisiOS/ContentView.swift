@@ -441,11 +441,13 @@ struct ContentView: View {
                 textContinuation.finish(throwing: error)
             }
         }
+        // Guarantees the forwarding task is cancelled on every exit path, including
+        // speakStream() throwing - not just the normal-completion path.
+        defer { forwardingTask.cancel() }
 
         await MainActor.run { currentResponse = "" }
 
         try await ttsManager.speakStream(textChunks)
-        forwardingTask.cancel()
 
         isProcessing = false
     }

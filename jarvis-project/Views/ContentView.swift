@@ -511,6 +511,9 @@ struct ContentView: View {
                 textContinuation.finish(throwing: error)
             }
         }
+        // Guarantees the forwarding task is cancelled on every exit path, including
+        // speakStream() throwing - not just the normal-completion path.
+        defer { forwardingTask.cancel() }
 
         await MainActor.run {
             currentResponse = ""
@@ -518,7 +521,6 @@ struct ContentView: View {
 
         print("🔊 Speaking response as it streams in...")
         try await ttsManager.speakStream(textChunks)
-        forwardingTask.cancel()
 
         print("✅ Voice workflow complete!")
 

@@ -265,15 +265,28 @@ enum StreamEvent {
     case error(String)
 
     /// Parses one SSE `data: {...}` JSON payload into a typed event.
+    ///
+    /// Never returns nil for a line that looked like an event but didn't parse -
+    /// a malformed "done" or "text_delta" payload becomes a visible .error instead
+    /// of silently dropping, which used to mean the answer just stopped mid-stream
+    /// with nothing shown to the user. Genuinely unrecognizable lines (not valid
+    /// JSON, or missing "type" entirely) return nil since those aren't events at all.
     static func parse(_ jsonData: Data) -> StreamEvent? {
-        guard let object = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
-              let type = object["type"] as? String else {
+        guard let object = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else {
+            print("⚠️ StreamEvent.parse: not valid JSON: \(String(data: jsonData, encoding: .utf8) ?? "<binary>")")
+            return nil
+        }
+        guard let type = object["type"] as? String else {
+            print("⚠️ StreamEvent.parse: missing 'type' field: \(object)")
             return nil
         }
 
         switch type {
         case "text_delta":
-            guard let text = object["text"] as? String else { return nil }
+            guard let text = object["text"] as? String else {
+                print("⚠️ StreamEvent.parse: text_delta missing 'text' field: \(object)")
+                return .error("Received a malformed response chunk from Jarvis")
+            }
             return .textDelta(text)
 
         case "error":
@@ -282,11 +295,13 @@ enum StreamEvent {
 
         case "done":
             guard let decoded = try? JSONDecoder().decode(CodeExecuteResponse.self, from: jsonData) else {
-                return nil
+                print("⚠️ StreamEvent.parse: 'done' payload failed to decode: \(object)")
+                return .error("Jarvis finished responding, but the final response was malformed")
             }
             return .done(decoded)
 
         default:
+            print("⚠️ StreamEvent.parse: unrecognized event type '\(type)'")
             return nil
         }
     }

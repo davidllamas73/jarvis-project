@@ -66,18 +66,23 @@ class NativeTTSManager: NSObject, ObservableObject {
             synthesizer.stopSpeaking(at: .immediate)
         }
         isSpeaking = false
-        pendingUtteranceCount = 0
-        allTextQueuedContinuation?.resume()
-        allTextQueuedContinuation = nil
+        endCurrentGeneration()
     }
 
     // MARK: - Streaming speech
 
-    /// Number of utterances queued but not yet finished. AVSpeechSynthesizer
-    /// queues utterances automatically when speak() is called while it's already
-    /// speaking, so this just tracks when we can consider playback fully done.
+    /// Number of utterances queued but not yet finished, for the CURRENT streamGeneration.
+    /// AVSpeechSynthesizer queues utterances automatically when speak() is called while
+    /// it's already speaking, so this just tracks when we can consider playback fully done.
     private var pendingUtteranceCount = 0
     private var allTextQueuedContinuation: CheckedContinuation<Void, Never>?
+
+    /// Bumped on every speakStream()/stop() call. Delegate callbacks capture the
+    /// generation that was active when their utterance was queued and no-op if it's
+    /// stale by the time they fire - this is what stops a late completion from one
+    /// speakStream() call from corrupting the state of a newer, overlapping one (e.g.
+    /// the wake word firing again while Jarvis is still speaking the previous answer).
+    private var streamGeneration = 0
 
     /// Speaks text as it streams in: buffers until a sentence boundary, then
     /// queues that sentence immediately so speech starts well before the full
@@ -86,7 +91,11 @@ class NativeTTSManager: NSObject, ObservableObject {
         if synthesizer.isSpeaking {
             synthesizer.stopSpeaking(at: .immediate)
         }
+
+        streamGeneration += 1
+        let myGeneration = streamGeneration
         pendingUtteranceCount = 0
+        allTextQueuedContinuation = nil
 
         var buffer = ""
         let sentenceEnders: Set<Character> = [".", "!", "?", "\n"]
@@ -101,7 +110,7 @@ class NativeTTSManager: NSObject, ObservableObject {
                 buffer = String(buffer[sentenceEnd...])
 
                 if !sentence.isEmpty {
-                    queueUtterance(sentence, rate: rate, pitch: pitch)
+                    queueUtterance(sentence, rate: rate, pitch: pitch, generation: myGeneration)
                 }
             }
         }
@@ -109,18 +118,22 @@ class NativeTTSManager: NSObject, ObservableObject {
         // Speak whatever's left that didn't end in punctuation.
         let remainder = buffer.trimmingCharacters(in: .whitespacesAndNewlines)
         if !remainder.isEmpty {
-            queueUtterance(remainder, rate: rate, pitch: pitch)
+            queueUtterance(remainder, rate: rate, pitch: pitch, generation: myGeneration)
         }
 
-        // Wait for every queued utterance to actually finish playing.
-        if pendingUtteranceCount > 0 {
+        // Wait for every queued utterance to actually finish playing - but only if
+        // we're still the active generation (stop() or a newer speakStream() call
+        // may have already superseded us while we were buffering text).
+        if myGeneration == streamGeneration, pendingUtteranceCount > 0 {
             await withCheckedContinuation { continuation in
                 allTextQueuedContinuation = continuation
             }
         }
     }
 
-    private func queueUtterance(_ text: String, rate: Float, pitch: Float) {
+    private func queueUtterance(_ text: String, rate: Float, pitch: Float, generation: Int) {
+        guard generation == streamGeneration else { return }
+
         let utterance = AVSpeechUtterance(string: text)
         utterance.voice = AVSpeechSynthesisVoice(identifier: "com.apple.voice.premium.en-GB.Malcolm")
         utterance.rate = rate
@@ -129,13 +142,26 @@ class NativeTTSManager: NSObject, ObservableObject {
 
         pendingUtteranceCount += 1
         isSpeaking = true
+        pendingGenerations.append(generation)
         synthesizer.speak(utterance)
     }
 
-    /// Shared by didFinish/didCancel: decrements the queue count and, once every
-    /// queued sentence from a speakStream() call has completed, marks speaking
-    /// done and resumes whoever's awaiting the full stream.
+    /// Tracks which generation each currently-queued AVSpeechUtterance belongs to,
+    /// in speak order, so a delegate callback can tell whether the utterance that
+    /// just finished was from the still-active generation or a superseded one.
+    private var pendingGenerations: [Int] = []
+
+    /// Shared by didFinish/didCancel: pops the oldest pending generation and, if it
+    /// matches the currently active one, decrements the count and - once every
+    /// queued sentence from that speakStream() call has completed - marks speaking
+    /// done and resumes whoever's awaiting the full stream. A stale generation (from
+    /// a speakStream()/stop() call that's since been superseded) is a no-op.
     private func finishOneQueuedUtterance() {
+        guard !pendingGenerations.isEmpty else { return }
+        let finishedGeneration = pendingGenerations.removeFirst()
+
+        guard finishedGeneration == streamGeneration else { return }
+
         if pendingUtteranceCount > 0 {
             pendingUtteranceCount -= 1
         }
@@ -144,6 +170,17 @@ class NativeTTSManager: NSObject, ObservableObject {
             allTextQueuedContinuation?.resume()
             allTextQueuedContinuation = nil
         }
+    }
+
+    /// Used by stop(): bumps the generation counter so any utterances still in
+    /// flight are recognized as stale when their delegate callbacks arrive, clears
+    /// the pending queue, and resumes anyone awaiting the current speakStream() call.
+    private func endCurrentGeneration() {
+        streamGeneration += 1
+        pendingUtteranceCount = 0
+        pendingGenerations.removeAll()
+        allTextQueuedContinuation?.resume()
+        allTextQueuedContinuation = nil
     }
 }
 
