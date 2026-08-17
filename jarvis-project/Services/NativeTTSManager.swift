@@ -133,9 +133,24 @@ class NativeTTSManager: NSObject, ObservableObject {
         // Wait for every queued utterance to actually finish playing - but only if
         // we're still the active generation (stop() or a newer speakStream() call
         // may have already superseded us while we were buffering text).
+        //
+        // Lost-wakeup fix: pendingUtteranceCount can already be back at 0 by the time
+        // this closure actually runs (a short trailing utterance can finish - and
+        // finishOneQueuedUtterance() can run - in the window between the check above
+        // and the continuation being stored below). Without the recheck here, that
+        // completion has nothing to resume (allTextQueuedContinuation is still nil at
+        // that point) and the continuation stored here would then never be resumed -
+        // a permanent hang. Re-checking inside the closure is safe because everything
+        // from here to finishOneQueuedUtterance() runs on the same @MainActor with no
+        // intervening suspension point, so this recheck and the store are atomic
+        // relative to any delegate-driven completion.
         if myGeneration == streamGeneration, pendingUtteranceCount > 0 {
             await withCheckedContinuation { continuation in
-                allTextQueuedContinuation = continuation
+                if pendingUtteranceCount == 0 || myGeneration != streamGeneration {
+                    continuation.resume()
+                } else {
+                    allTextQueuedContinuation = continuation
+                }
             }
         }
     }
