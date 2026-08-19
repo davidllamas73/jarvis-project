@@ -421,6 +421,14 @@ struct ContentView: View {
 
         let (textChunks, textContinuation) = AsyncThrowingStream<String, Error>.makeStream()
 
+        // Must clear BEFORE starting forwardingTask below, not after: Task{} schedules
+        // immediately, so for a fast/short response the task can already be appending
+        // deltas to currentResponse by the time this line would otherwise run - clearing
+        // it afterward would wipe out a reply that already fully arrived (reproduced with
+        // very short responses like "Hi!", which streamed and completed successfully per
+        // the server logs but the "Jarvis:" box rendered empty on screen).
+        await MainActor.run { currentResponse = "" }
+
         let forwardingTask = Task {
             do {
                 for try await event in eventStream {
@@ -444,8 +452,6 @@ struct ContentView: View {
         // Guarantees the forwarding task is cancelled on every exit path, including
         // speakStream() throwing - not just the normal-completion path.
         defer { forwardingTask.cancel() }
-
-        await MainActor.run { currentResponse = "" }
 
         try await ttsManager.speakStream(textChunks)
 
