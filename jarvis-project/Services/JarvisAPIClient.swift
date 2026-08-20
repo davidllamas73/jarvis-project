@@ -215,6 +215,7 @@ class JarvisAPIClient: ObservableObject {
                     }
 
                     for try await line in byteStream.lines {
+                        print("🔍 SSE line: '\(line)'")
                         guard line.hasPrefix("data: ") else { continue }
                         let jsonString = String(line.dropFirst("data: ".count))
                         guard let jsonData = jsonString.data(using: .utf8),
