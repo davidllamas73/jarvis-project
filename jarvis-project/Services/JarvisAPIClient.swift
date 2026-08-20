@@ -207,15 +207,21 @@ class JarvisAPIClient: ObservableObject {
                     urlRequest.setValue("text/event-stream", forHTTPHeaderField: "Accept")
                     urlRequest.httpBody = body
 
+                    print("🔍 SSE: about to call urlSession.bytes(for:)")
                     let (byteStream, response) = try await self.urlSession.bytes(for: urlRequest)
+                    print("🔍 SSE: got response \(response)")
 
                     guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
+                        print("🔍 SSE: bad response, finishing with invalidResponse")
                         continuation.finish(throwing: APIError.invalidResponse)
                         return
                     }
 
+                    print("🔍 SSE: status \(httpResponse.statusCode), entering line loop")
+                    var lineCount = 0
                     for try await line in byteStream.lines {
-                        print("🔍 SSE line: '\(line)'")
+                        lineCount += 1
+                        print("🔍 SSE line #\(lineCount): '\(line)'")
                         guard line.hasPrefix("data: ") else { continue }
                         let jsonString = String(line.dropFirst("data: ".count))
                         guard let jsonData = jsonString.data(using: .utf8),
@@ -233,8 +239,10 @@ class JarvisAPIClient: ObservableObject {
                         }
                     }
 
+                    print("🔍 SSE: line loop ended normally after \(lineCount) lines")
                     continuation.finish()
                 } catch {
+                    print("🔍 SSE: outer catch, error=\(error)")
                     continuation.finish(throwing: error)
                 }
             }
