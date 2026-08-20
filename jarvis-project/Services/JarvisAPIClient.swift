@@ -1,5 +1,8 @@
 import Foundation
 import Combine
+import os
+
+private let sseDebugLog = Logger(subsystem: "com.jarvis.debug", category: "sse")
 
 class JarvisAPIClient: ObservableObject {
     static let shared = JarvisAPIClient()
@@ -207,21 +210,21 @@ class JarvisAPIClient: ObservableObject {
                     urlRequest.setValue("text/event-stream", forHTTPHeaderField: "Accept")
                     urlRequest.httpBody = body
 
-                    print("🔍 SSE: about to call urlSession.bytes(for:)")
+                    sseDebugLog.fault("about to call urlSession.bytes(for:)")
                     let (byteStream, response) = try await self.urlSession.bytes(for: urlRequest)
-                    print("🔍 SSE: got response \(response)")
+                    sseDebugLog.fault("got response \(String(describing: response), privacy: .public)")
 
                     guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
-                        print("🔍 SSE: bad response, finishing with invalidResponse")
+                        sseDebugLog.fault("bad response, finishing with invalidResponse")
                         continuation.finish(throwing: APIError.invalidResponse)
                         return
                     }
 
-                    print("🔍 SSE: status \(httpResponse.statusCode), entering line loop")
+                    sseDebugLog.fault("status \(httpResponse.statusCode, privacy: .public), entering line loop")
                     var lineCount = 0
                     for try await line in byteStream.lines {
                         lineCount += 1
-                        print("🔍 SSE line #\(lineCount): '\(line)'")
+                        sseDebugLog.fault("line #\(lineCount, privacy: .public): '\(line, privacy: .public)'")
                         guard line.hasPrefix("data: ") else { continue }
                         let jsonString = String(line.dropFirst("data: ".count))
                         guard let jsonData = jsonString.data(using: .utf8),
@@ -239,10 +242,10 @@ class JarvisAPIClient: ObservableObject {
                         }
                     }
 
-                    print("🔍 SSE: line loop ended normally after \(lineCount) lines")
+                    sseDebugLog.fault("line loop ended normally after \(lineCount, privacy: .public) lines")
                     continuation.finish()
                 } catch {
-                    print("🔍 SSE: outer catch, error=\(error)")
+                    sseDebugLog.fault("outer catch, error=\(String(describing: error), privacy: .public)")
                     continuation.finish(throwing: error)
                 }
             }
