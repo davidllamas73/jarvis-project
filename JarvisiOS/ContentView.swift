@@ -429,31 +429,43 @@ struct ContentView: View {
         // the server logs but the "Jarvis:" box rendered empty on screen).
         await MainActor.run { currentResponse = "" }
 
+        print("🔍 DEBUG sendQuery: currentResponse cleared, about to start forwardingTask")
+
         let forwardingTask = Task {
             do {
                 for try await event in eventStream {
                     switch event {
                     case .textDelta(let delta):
+                        print("🔍 DEBUG forwardingTask: got textDelta '\(delta)'")
                         await MainActor.run {
                             currentResponse += delta
+                            print("🔍 DEBUG forwardingTask: currentResponse is now '\(currentResponse)'")
                         }
                         textContinuation.yield(delta)
-                    case .done:
+                    case .done(let response):
+                        print("🔍 DEBUG forwardingTask: got done event, answer='\(response.answer)'")
                         textContinuation.finish()
                     case .error(let message):
+                        print("🔍 DEBUG forwardingTask: got error event: \(message)")
                         textContinuation.finish(throwing: APIError.serverError(message))
                     }
                 }
+                print("🔍 DEBUG forwardingTask: eventStream loop ended normally")
                 textContinuation.finish()
             } catch {
+                print("🔍 DEBUG forwardingTask: eventStream loop threw: \(error)")
                 textContinuation.finish(throwing: error)
             }
         }
         // Guarantees the forwarding task is cancelled on every exit path, including
         // speakStream() throwing - not just the normal-completion path.
-        defer { forwardingTask.cancel() }
+        defer {
+            print("🔍 DEBUG sendQuery: defer running, cancelling forwardingTask. currentResponse='\(currentResponse)'")
+            forwardingTask.cancel()
+        }
 
         try await ttsManager.speakStream(textChunks)
+        print("🔍 DEBUG sendQuery: speakStream returned. currentResponse='\(currentResponse)'")
 
         isProcessing = false
     }
