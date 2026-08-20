@@ -1,5 +1,8 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import os
+
+private let viewDebugLog = Logger(subsystem: "com.jarvis.debug", category: "view")
 
 /// iOS counterpart to the macOS ContentView. Same voice + text + attachment flow,
 /// same shared Services/Models. The one real behavior difference: wake-word listening
@@ -26,7 +29,8 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
-        NavigationStack {
+        let _ = viewDebugLog.fault("body evaluated, currentResponse='\(currentResponse, privacy: .public)'")
+        return NavigationStack {
             VStack(spacing: 20) {
                 headerView
 
@@ -45,6 +49,9 @@ struct ContentView: View {
                 statusView
             }
             .padding()
+            .onChange(of: currentResponse) { old, new in
+                viewDebugLog.fault("currentResponse changed: '\(old, privacy: .public)' -> '\(new, privacy: .public)'")
+            }
             .task {
                 await loadHealthStatus()
                 setupWakeWord()
