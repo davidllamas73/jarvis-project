@@ -429,43 +429,41 @@ struct ContentView: View {
         // the server logs but the "Jarvis:" box rendered empty on screen).
         await MainActor.run { currentResponse = "" }
 
-        print("🔍 DEBUG sendQuery: currentResponse cleared, about to start forwardingTask")
-
         let forwardingTask = Task {
             do {
                 for try await event in eventStream {
                     switch event {
                     case .textDelta(let delta):
-                        print("🔍 DEBUG forwardingTask: got textDelta '\(delta)'")
                         await MainActor.run {
                             currentResponse += delta
-                            print("🔍 DEBUG forwardingTask: currentResponse is now '\(currentResponse)'")
                         }
                         textContinuation.yield(delta)
                     case .done(let response):
-                        print("🔍 DEBUG forwardingTask: got done event, answer='\(response.answer)'")
+                        // Deltas are for incremental display/TTS pacing only - `answer` on
+                        // `done` is the authoritative full text. If the server ever sends a
+                        // `done` whose answer isn't fully covered by the deltas we saw (e.g.
+                        // no deltas at all for a short reply), fall back to it so the box
+                        // doesn't render empty despite a successful response.
+                        await MainActor.run {
+                            if currentResponse.isEmpty && !response.answer.isEmpty {
+                                currentResponse = response.answer
+                            }
+                        }
                         textContinuation.finish()
                     case .error(let message):
-                        print("🔍 DEBUG forwardingTask: got error event: \(message)")
                         textContinuation.finish(throwing: APIError.serverError(message))
                     }
                 }
-                print("🔍 DEBUG forwardingTask: eventStream loop ended normally")
                 textContinuation.finish()
             } catch {
-                print("🔍 DEBUG forwardingTask: eventStream loop threw: \(error)")
                 textContinuation.finish(throwing: error)
             }
         }
         // Guarantees the forwarding task is cancelled on every exit path, including
         // speakStream() throwing - not just the normal-completion path.
-        defer {
-            print("🔍 DEBUG sendQuery: defer running, cancelling forwardingTask. currentResponse='\(currentResponse)'")
-            forwardingTask.cancel()
-        }
+        defer { forwardingTask.cancel() }
 
         try await ttsManager.speakStream(textChunks)
-        print("🔍 DEBUG sendQuery: speakStream returned. currentResponse='\(currentResponse)'")
 
         isProcessing = false
     }

@@ -510,7 +510,17 @@ struct ContentView: View {
                             currentResponse += delta
                         }
                         textContinuation.yield(delta)
-                    case .done:
+                    case .done(let response):
+                        // Deltas are for incremental display/TTS pacing only - `answer` on
+                        // `done` is the authoritative full text. If the server ever sends a
+                        // `done` whose answer isn't fully covered by the deltas we saw (e.g.
+                        // no deltas at all for a short reply), fall back to it so the box
+                        // doesn't render empty despite a successful response.
+                        await MainActor.run {
+                            if currentResponse.isEmpty && !response.answer.isEmpty {
+                                currentResponse = response.answer
+                            }
+                        }
                         textContinuation.finish()
                     case .error(let message):
                         textContinuation.finish(throwing: APIError.serverError(message))
