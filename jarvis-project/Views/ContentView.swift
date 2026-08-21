@@ -263,14 +263,13 @@ struct ContentView: View {
                 .font(.caption)
                 .foregroundColor(.secondary)
 
-            ScrollView {
-                Text(currentResponse)
-                    .font(.body)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .id(currentResponse)
-            }
-            .frame(maxHeight: 200)
+            Text(currentResponse)
+                .font(.body)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxHeight: 200, alignment: .top)
+                .fixedSize(horizontal: false, vertical: true)
+                .clipped()
         }
         .padding()
         .background(Color.secondary.opacity(0.05))
