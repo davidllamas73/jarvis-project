@@ -8,6 +8,9 @@
 import Foundation
 import AVFoundation
 import Combine
+import os
+
+private let perfLog = Logger(subsystem: "com.jarvis.debug", category: "perf")
 
 /// Native text-to-speech using AVSpeechSynthesizer
 /// Zero latency, no API calls, works offline
@@ -93,6 +96,11 @@ class NativeTTSManager: NSObject, ObservableObject {
     /// the wake word firing again while Jarvis is still speaking the previous answer).
     private var streamGeneration = 0
 
+    /// Temporary perf-measurement flag: true once we've logged the first didStart
+    /// for the current streamGeneration, so PERF logging below fires only once per
+    /// query instead of once per queued sentence.
+    private var hasLoggedFirstSpeechThisGeneration = false
+
     /// Speaks text as it streams in: buffers until a sentence boundary, then
     /// queues that sentence immediately so speech starts well before the full
     /// response is ready. Returns once every queued sentence has finished playing.
@@ -105,6 +113,7 @@ class NativeTTSManager: NSObject, ObservableObject {
         let myGeneration = streamGeneration
         pendingUtteranceCount = 0
         allTextQueuedContinuation = nil
+        hasLoggedFirstSpeechThisGeneration = false
 
         var buffer = ""
         let sentenceEnders: Set<Character> = [".", "!", "?", "\n"]
@@ -215,9 +224,12 @@ extension NativeTTSManager: AVSpeechSynthesizerDelegate {
     // not necessarily the main thread. Hop to the main actor before touching any
     // @MainActor state - this is what actually fixes the data race/hang risk.
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
-        print("TTS started")
         Task { @MainActor in
             self.isSpeaking = true
+            if !self.hasLoggedFirstSpeechThisGeneration {
+                self.hasLoggedFirstSpeechThisGeneration = true
+                perfLog.fault("PERF: first TTS word started")
+            }
         }
     }
 

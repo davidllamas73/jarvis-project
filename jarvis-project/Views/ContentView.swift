@@ -1,5 +1,8 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import os
+
+private let perfLog = Logger(subsystem: "com.jarvis.debug", category: "perf")
 
 /// ContentView using Speech Recognition with YOUR actual services
 /// This version uses JarvisAPIClient, AudioManager, and SpeechRecognitionManager
@@ -458,6 +461,8 @@ struct ContentView: View {
         let attachments = pendingAttachments
         promptText = ""
         pendingAttachments = []
+
+        perfLog.fault("PERF: query submitted")
 
         Task {
             do {

@@ -1,5 +1,8 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import os
+
+private let perfLog = Logger(subsystem: "com.jarvis.debug", category: "perf")
 
 /// iOS counterpart to the macOS ContentView. Same voice + text + attachment flow,
 /// same shared Services/Models. The one real behavior difference: wake-word listening
@@ -395,6 +398,8 @@ struct ContentView: View {
         let attachments = pendingAttachments
         promptText = ""
         pendingAttachments = []
+
+        perfLog.fault("PERF: query submitted")
 
         Task {
             do {
