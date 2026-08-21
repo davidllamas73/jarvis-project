@@ -267,6 +267,8 @@ struct ContentView: View {
                 Text(currentResponse)
                     .font(.body)
                     .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .id(currentResponse)
             }
             .frame(maxHeight: 200)
         }
