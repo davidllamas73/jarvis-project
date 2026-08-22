@@ -687,16 +687,54 @@ END OF WIKI INDEX. You now have full knowledge of David's wiki structure.""",
         try:
             system_blocks, messages = await self._build_prompt_context(session_id, query)
 
-            # Intermediate turns: identical to execute()'s loop, non-streaming,
-            # since tool calls must fully resolve before Claude can keep going.
-            response = await self.client.messages.create(
+            # First turn streams directly instead of a throwaway non-streaming
+            # "decide if a tool is needed" call first - the streaming API supports
+            # tools= too, and still reports stop_reason == "tool_use" via
+            # get_final_message() if Claude calls one mid-stream. This halves the
+            # round trips (and the 72KB cached-wiki system prompt processing that
+            # comes with each one) for the common case for a simple conversational
+            # reply that never touches a tool - a "hi" no longer pays for two full
+            # model invocations before a single word can be spoken.
+            #
+            # If a tool IS requested, nothing was lost: no text_delta was yielded
+            # yet (Claude doesn't emit prose before a tool call in the same turn),
+            # so we fall through to the identical non-streaming tool-execution loop
+            # execute() uses, then stream the real final turn once tools resolve.
+            response_text = ""
+            async with self.client.messages.stream(
                 model="claude-sonnet-4-5-20250929",
                 max_tokens=max_tokens,
                 system=system_blocks,
                 messages=messages,
                 tools=self._get_tools(),
                 temperature=0.7
-            )
+            ) as stream:
+                async for text in stream.text_stream:
+                    response_text += text
+                    yield {"type": "text_delta", "text": text}
+                response = await stream.get_final_message()
+
+            if response.stop_reason != "tool_use":
+                final_content = response.content
+                stream_completed = True
+                execution_time_ms = int((time.time() - start_time) * 1000)
+
+                print(f"⚡ Stream execution: {execution_time_ms}ms, {len(tool_calls)} tools, {len(files_modified)} files")
+
+                yield {
+                    "type": "done",
+                    "answer": response_text,
+                    "tool_calls": [tc.model_dump() for tc in tool_calls],
+                    "files_modified": files_modified,
+                    "execution_time_ms": execution_time_ms
+                }
+                return
+
+            # A tool was requested on the first turn - fall through to the same
+            # non-streaming tool-execution loop execute() uses. response.content
+            # gets appended as the assistant turn inside the loop below, same as
+            # every subsequent tool round trip.
+            response_text = ""
 
             while response.stop_reason == "tool_use":
                 tool_results = []
