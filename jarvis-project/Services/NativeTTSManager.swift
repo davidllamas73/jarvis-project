@@ -34,7 +34,7 @@ class NativeTTSManager: NSObject, ObservableObject {
     /// is a confirmed Apple-side trigger for the "unsafeForcedSync called from Swift
     /// Concurrent context" diagnostic and the Hang Risk warning that came with it
     /// (Apple DTS, developer.apple.com/forums/thread/802423; filed as FB20484368).
-    private static let voice = AVSpeechSynthesisVoice(identifier: "com.apple.voice.premium.en-GB.Malcolm")
+    private static let voice = AVSpeechSynthesisVoice(identifier: "com.apple.voice.premium.en-GB.Jamie")
 
     @Published var isSpeaking = false
 
