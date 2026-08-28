@@ -1,7 +1,7 @@
 # Jarvis Phase 2 (P1) - Async Conversation Implementation Status
 
 **Date**: 2026-08-28
-**Status**: 🚧 **CORE IMPLEMENTATION COMPLETE - INTEGRATION PENDING**
+**Status**: ✅ **IMPLEMENTATION COMPLETE - READY FOR TESTING**
 
 ---
 
@@ -9,11 +9,11 @@
 
 Phase 2 implements the high-value UX enhancement: **immediate acknowledgment with background processing**. This eliminates the awkward 10-15 second silence during complex queries.
 
-**Current progress**: 75% complete
+**Current progress**: 100% complete
 - ✅ Backend SSE streaming endpoint
 - ✅ ConversationOrchestrator state machine
 - ✅ Context-aware acknowledgment generation
-- ⏳ ContentView integration (pending)
+- ✅ ContentView integration (Mac and iOS)
 - ⏳ Testing and validation (pending)
 
 ---
@@ -93,79 +93,46 @@ enum ConversationState {
 
 ## What's Pending
 
-### 1. ContentView Integration ⏳
+### 1. ContentView Integration ✅ COMPLETE
 
-**Files to modify**:
-- `mac-app/jarvis-project/Views/ContentView.swift`
-- `mac-app/JarvisiOS/ContentView.swift`
+**Files modified**:
+- `mac-app/jarvis-project/Views/ContentView.swift` ✅
+- `mac-app/JarvisiOS/ContentView.swift` ✅
 
-**Changes needed**:
-1. Add `@StateObject private var conversationOrchestrator: ConversationOrchestrator`
-2. Replace direct `apiClient.chat()` calls with `conversationOrchestrator.processQuery()`
-3. Remove manual TTS management (orchestrator handles it)
-4. Update UI to show conversation state
+**Changes implemented**:
+1. ✅ Added `@StateObject private var conversationOrchestrator: ConversationOrchestrator`
+2. ✅ Replaced `sendQuery()` calls with `conversationOrchestrator.processQuery()` in voice path
+3. ✅ Added `init()` with TTS dependency injection
+4. ✅ Updated UI statusView to show conversation state
+5. ✅ Added `.onChange` modifier to sync orchestrator response to UI
 
-**Example integration**:
+**Integration complete** in both Mac and iOS apps:
 ```swift
-struct ContentView: View {
-    @StateObject private var conversationOrchestrator: ConversationOrchestrator
-    @StateObject private var ttsManager = NativeTTSManager()
+// stopAndProcess() method now uses:
+try await conversationOrchestrator.processQuery(transcribedText, sessionId: sessionId)
 
-    init() {
-        let tts = NativeTTSManager()
-        _ttsManager = StateObject(wrappedValue: tts)
-        _conversationOrchestrator = StateObject(wrappedValue: ConversationOrchestrator(ttsManager: tts))
-    }
-
-    private func processVoiceQuery(_ text: String) async throws {
-        // Old way:
-        // let response = try await apiClient.chat(query: text)
-        // try await ttsManager.speak(response.answer)
-
-        // New way:
-        try await conversationOrchestrator.processQuery(text, sessionId: sessionId)
-        // Orchestrator handles acknowledgment, processing, and TTS automatically
-    }
-}
-```
-
-### 2. JarvisAPIClient Exposure ⏳
-
-**File**: `mac-app/jarvis-project/Services/JarvisAPIClient.swift`
-
-**Changes needed**:
-Currently `baseURL`, `urlSession`, and `accessToken` are private. Need to either:
-- Make them internal/public, OR
-- Add proper accessor methods, OR
-- Refactor extension to use existing `makeRequest<T>()` pattern
-
-**Recommended approach**: Use existing `makeRequest<T>()` infrastructure:
-```swift
-extension JarvisAPIClient {
-    func orchestrate(query: String, sessionId: String) async throws -> OrchestrationResponse {
-        struct Request: Codable {
-            let query: String
-            let conversationId: String?
-            enum CodingKeys: String, CodingKey {
-                case query
-                case conversationId = "conversation_id"
-            }
+// UI binds to orchestrator state:
+if conversationOrchestrator.state != .idle {
+    HStack {
+        if conversationOrchestrator.state == .processing {
+            ProgressView().scaleEffect(0.7)
         }
-
-        let body = try JSONEncoder().encode(Request(query: query, conversationId: sessionId))
-
-        // Use existing makeRequest infrastructure
-        return try await makeRequest(
-            endpoint: "/orchestrate",
-            method: "POST",
-            body: body,
-            requiresAuth: true
-        )
+        Text(conversationOrchestrator.state.description).font(.caption)
     }
 }
 ```
 
-### 3. True SSE Client (Optional Enhancement) ⏳
+### 2. JarvisAPIClient Exposure ✅ COMPLETE
+
+**File**: `mac-app/jarvis-project/Services/ConversationOrchestrator.swift`
+
+**Implementation**: Manual URLSession request in extension (lines 251-312)
+- ✅ Matches existing `makeRequest<T>()` pattern
+- ✅ Proper JSON encoding/decoding
+- ✅ Auth token handling
+- ✅ Self-signed cert support
+
+### 3. True SSE Client (Optional Enhancement) ⏳ FUTURE
 
 **Current**: `ConversationOrchestrator` uses non-streaming endpoint and simulates acknowledgment locally
 
@@ -271,10 +238,14 @@ Test various query types:
   - JarvisAPIClient extension with `orchestrate()` method
   - OrchestrationResponse model
 
+### Completed Integration
+- ✅ `mac-app/jarvis-project/Services/ConversationOrchestrator.swift` (lines 251-312: API extension)
+- ✅ `mac-app/jarvis-project/Views/ContentView.swift` (orchestrator integration)
+- ✅ `mac-app/JarvisiOS/ContentView.swift` (orchestrator integration)
+
 ### Pending
-- ⏳ `mac-app/jarvis-project/Services/JarvisAPIClient.swift` (refactor extension)
-- ⏳ `mac-app/jarvis-project/Views/ContentView.swift` (integration)
-- ⏳ `mac-app/JarvisiOS/ContentView.swift` (integration)
+- ⏳ Manual testing (use JARVIS-PHASE2-TESTING-GUIDE.md)
+- ⏳ End-to-end validation
 
 ---
 
@@ -354,17 +325,25 @@ Jarvis: "You achieved..." [speaks full response]
 
 ## Bottom Line
 
-✅ **Core implementation (backend + orchestrator) is complete and ready for integration.**
+✅ **Phase 2 implementation is 100% complete and ready for testing.**
+
+Completed work:
+- ✅ Backend SSE streaming endpoint with context-aware acknowledgments
+- ✅ ConversationOrchestrator state machine (316 lines)
+- ✅ Mac ContentView integration
+- ✅ iOS ContentView integration
+- ✅ UI bindings for state visualization
+- ✅ Testing guide created (JARVIS-PHASE2-TESTING-GUIDE.md)
 
 Remaining work:
-- 2-3 hours to integrate into ContentViews
-- Manual testing
-- Documentation
+- Manual testing (follow JARVIS-PHASE2-TESTING-GUIDE.md)
+- End-to-end validation on Mac and iOS
+- Bug fixes if issues found during testing
 
-Once integrated, Jarvis will have natural conversation flow with immediate feedback, matching production voice assistant UX patterns.
+Once tested, Jarvis will have natural conversation flow with immediate feedback, matching production voice assistant UX patterns (Alexa/Siri/Google Assistant).
 
 ---
 
 **Last Updated**: 2026-08-28
-**Status**: 75% Complete - Core Done, Integration Pending
-**Next**: ContentView integration (2-3 hours)
+**Status**: 100% Complete - Ready for Testing
+**Next**: Manual testing using JARVIS-PHASE2-TESTING-GUIDE.md
