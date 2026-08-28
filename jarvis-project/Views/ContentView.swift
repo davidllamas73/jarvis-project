@@ -12,7 +12,15 @@ struct ContentView: View {
     @StateObject private var speechManager = SpeechRecognitionManagerSimple()
     @StateObject private var ttsManager = NativeTTSManager()
     @StateObject private var wakeWordManager = WakeWordManager()
+    @StateObject private var conversationOrchestrator: ConversationOrchestrator
     private let apiClient = JarvisAPIClient.shared
+
+    // Initialize conversationOrchestrator with ttsManager dependency
+    init() {
+        let tts = NativeTTSManager()
+        _ttsManager = StateObject(wrappedValue: tts)
+        _conversationOrchestrator = StateObject(wrappedValue: ConversationOrchestrator(ttsManager: tts))
+    }
 
     @State private var sessionId = UUID().uuidString
     @State private var isProcessing = false
@@ -69,6 +77,9 @@ struct ContentView: View {
             allowsMultipleSelection: true
         ) { result in
             handleFileImport(result)
+        }
+        .onChange(of: conversationOrchestrator.currentResponse) { newResponse in
+            currentResponse = newResponse
         }
     }
 
@@ -284,7 +295,21 @@ struct ContentView: View {
 
     private var statusView: some View {
         VStack(spacing: 4) {
-            if isProcessing {
+            if conversationOrchestrator.state != .idle {
+                // Show orchestrator state when active
+                HStack(spacing: 8) {
+                    if conversationOrchestrator.state == .processing {
+                        ProgressView()
+                            .scaleEffect(0.7)
+                    } else if conversationOrchestrator.state == .speaking || conversationOrchestrator.state == .acknowledged {
+                        Image(systemName: "speaker.wave.2.fill")
+                            .font(.caption)
+                    }
+                    Text(conversationOrchestrator.state.description)
+                        .font(.caption)
+                }
+                .foregroundColor(conversationOrchestrator.state == .processing ? .primary : .blue)
+            } else if isProcessing {
                 HStack(spacing: 8) {
                     ProgressView()
                         .scaleEffect(0.7)
@@ -378,6 +403,26 @@ struct ContentView: View {
                 }
             }
         }
+
+        // Wire barge-in detection (Phase 3)
+        conversationOrchestrator.audioEngine = wakeWordManager.audioEngine
+        conversationOrchestrator.onBargeIn = { [weak self] in
+            Task { @MainActor in
+                await self?.handleBargeInInterruption()
+            }
+        }
+    }
+
+    private func handleBargeInInterruption() async {
+        print("🎤 User interrupted, capturing new query")
+
+        // Start new query capture (same as wake word flow)
+        guard !speechManager.isRecording else {
+            print("⚠️ Already recording, ignoring barge-in")
+            return
+        }
+
+        await startVoiceInput()
     }
 
     // MARK: - Voice Actions
@@ -420,7 +465,6 @@ struct ContentView: View {
     private func stopAndProcess() async {
         do {
             isProcessing = true
-            currentResponse = ""
 
             print("🛑 Stopping recording and transcribing...")
 
@@ -436,17 +480,22 @@ struct ContentView: View {
 
             print("✅ Recognized: '\(transcribedText)'")
 
-            try await sendQuery(transcribedText, attachments: [])
+            // Use ConversationOrchestrator for natural async flow with immediate acknowledgment
+            try await conversationOrchestrator.processQuery(transcribedText, sessionId: sessionId)
 
+            isProcessing = false
             wakeWordManager.resumeAfterActiveQuery()
 
         } catch let error as SpeechError {
+            isProcessing = false
             wakeWordManager.resumeAfterActiveQuery()
             await handleError(error.localizedDescription ?? "Speech recognition failed")
         } catch let error as APIError {
+            isProcessing = false
             wakeWordManager.resumeAfterActiveQuery()
             await handleError(error.localizedDescription ?? "API error")
         } catch {
+            isProcessing = false
             wakeWordManager.resumeAfterActiveQuery()
             await handleError("Voice input error: \(error.localizedDescription)")
         }

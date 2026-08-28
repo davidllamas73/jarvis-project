@@ -24,13 +24,23 @@ class WakeWordManager: NSObject, ObservableObject {
     private let sleepPhrases = ["thank you jarvis", "thanks jarvis", "bye jarvis", "goodbye jarvis"]
 
     private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
-    private let audioEngine = AVAudioEngine()
+    let audioEngine = AVAudioEngine()  // Exposed for BargeInDetector integration
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
 
     /// Whether the query-capturing recognizer currently owns the mic.
     /// While true, the wake-word listener stays paused to avoid contention.
     private var isSuspended = false
+
+    /// Mutex guard to prevent concurrent session transitions that would create
+    /// CoreAudio HAL lock contention. Only one endSession()+beginSession() cycle
+    /// may execute at a time; racing calls are no-opped rather than queued.
+    private var isTransitioning = false
+
+    /// Tracks consecutive session failures for exponential backoff. Reset to 0
+    /// on any session that runs successfully for >5 seconds.
+    private var consecutiveFailures = 0
+    private var lastSessionStartTime: Date?
 
     private var restartTimer: Timer?
 
@@ -115,6 +125,7 @@ class WakeWordManager: NSObject, ObservableObject {
         }
 
         isListeningForWakeWord = true
+        lastSessionStartTime = Date()
 
         recognitionTask = speechRecognizer.recognitionTask(with: request) { [weak self] result, error in
             guard let self else { return }
@@ -124,9 +135,31 @@ class WakeWordManager: NSObject, ObservableObject {
                 self.evaluate(heard)
             }
 
-            if error != nil || (result?.isFinal ?? false) {
-                // On-device sessions end after a short window of silence/finality.
-                // Restart transparently so listening feels continuous.
+            if let error {
+                // Distinguish quota/rate-limit errors from benign session endings.
+                // Per voice-conversation-protocol-design.md §5, quota errors need backoff.
+                let errorString = error.localizedDescription.lowercased()
+                let isQuotaError = errorString.contains("quota") || errorString.contains("rate limit")
+
+                if isQuotaError {
+                    print("⚠️ WakeWordManager: quota/rate-limit error, applying backoff")
+                    Task { @MainActor in
+                        self.consecutiveFailures += 1
+                        await self.restartWithBackoff()
+                    }
+                } else {
+                    print("⚠️ WakeWordManager: session error (non-quota), restarting: \(error)")
+                    Task { @MainActor in
+                        self.restartSessionIfNeeded()
+                    }
+                }
+            } else if result?.isFinal ?? false {
+                // Natural session end (silence/finality), not an error.
+                // Reset failure counter if session ran for >5 seconds (healthy).
+                if let startTime = self.lastSessionStartTime,
+                   Date().timeIntervalSince(startTime) > 5 {
+                    self.consecutiveFailures = 0
+                }
                 Task { @MainActor in
                     self.restartSessionIfNeeded()
                 }
@@ -161,9 +194,26 @@ class WakeWordManager: NSObject, ObservableObject {
     }
 
     private func restartSessionIfNeeded() {
-        guard !isSuspended else { return }
+        guard !isSuspended, !isTransitioning else { return }
+        isTransitioning = true
+        defer { isTransitioning = false }
         endSession()
         beginSession()
+    }
+
+    /// Restart with exponential backoff based on consecutive failure count.
+    /// Per voice-conversation-protocol-design.md §7.3: prevents quota-exhaustion
+    /// feedback loops where errors trigger immediate retries that hit quota again.
+    private func restartWithBackoff() async {
+        guard !isSuspended else { return }
+
+        // Exponential backoff: 1s, 2s, 4s, 8s, capped at 10s
+        let backoffSeconds = min(Double(1 << consecutiveFailures), 10.0)
+        print("⏳ WakeWordManager: backing off \(backoffSeconds)s before retry (failure #\(consecutiveFailures))")
+
+        try? await Task.sleep(nanoseconds: UInt64(backoffSeconds * 1_000_000_000))
+
+        restartSessionIfNeeded()
     }
 
     // MARK: - Phrase matching
