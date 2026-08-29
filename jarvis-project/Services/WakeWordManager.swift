@@ -91,6 +91,8 @@ class WakeWordManager: NSObject, ObservableObject {
             return
         }
 
+        diagLog.fault("DIAG: supportsOnDeviceRecognition=\(speechRecognizer.supportsOnDeviceRecognition)")
+
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
         request.requiresOnDeviceRecognition = true // keep wake-word audio on-device
