@@ -204,8 +204,13 @@ class WakeWordManager: NSObject, ObservableObject {
     /// Restart with exponential backoff based on consecutive failure count.
     /// Per voice-conversation-protocol-design.md §7.3: prevents quota-exhaustion
     /// feedback loops where errors trigger immediate retries that hit quota again.
+    ///
+    /// Claims isTransitioning for the entire backoff sleep, not just the eventual
+    /// restart - otherwise a Timer- or error-driven restart landing mid-sleep would
+    /// race ahead of the backoff and re-trigger the same failure immediately.
     private func restartWithBackoff() async {
-        guard !isSuspended else { return }
+        guard !isSuspended, !isTransitioning else { return }
+        isTransitioning = true
 
         // Exponential backoff: 1s, 2s, 4s, 8s, capped at 10s
         let backoffSeconds = min(Double(1 << consecutiveFailures), 10.0)
@@ -213,6 +218,7 @@ class WakeWordManager: NSObject, ObservableObject {
 
         try? await Task.sleep(nanoseconds: UInt64(backoffSeconds * 1_000_000_000))
 
+        isTransitioning = false
         restartSessionIfNeeded()
     }
 
