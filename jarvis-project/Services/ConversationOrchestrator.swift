@@ -177,7 +177,23 @@ class ConversationOrchestrator: ObservableObject {
 
         guard !Task.isCancelled else { throw CancellationError() }
 
-        // 5. Speak final response
+        // 4. Check if background task was triggered
+        if response.needsBackground, let taskId = response.taskId {
+            // Background mode: speak interim response and start polling
+            state = .speaking
+            currentResponse = response.answer
+            try await speakResponse(response.answer)
+
+            // Kick off independent background poller (fire-and-forget)
+            Task.detached { [weak self] in
+                await self?.pollBackgroundTask(taskId: taskId)
+            }
+
+            // Return to idle immediately (wake word stays armed)
+            return
+        }
+
+        // 5. Fast path: speak final response
         state = .speaking
         currentResponse = response.answer
         try await speakResponse(response.answer)
@@ -288,6 +304,69 @@ class ConversationOrchestrator: ObservableObject {
         onBargeIn?()
     }
 
+    /// Poll background task until completion and deliver result.
+    ///
+    /// Runs in detached task - continues polling independently of main conversation flow.
+    /// Delivers result politely: waits if currently speaking/processing, then interrupts
+    /// with background result.
+    private func pollBackgroundTask(taskId: String) async {
+        while true {
+            // Poll every 3 seconds
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+
+            guard let status = try? await apiClient.getTaskStatus(taskId: taskId) else {
+                // Network error or task not found - retry
+                continue
+            }
+
+            switch status.status {
+            case "done", "failed":
+                // Task complete - deliver result
+                await deliverBackgroundResult(status)
+                return
+            default:
+                // Still pending/running - keep polling
+                continue
+            }
+        }
+    }
+
+    /// Deliver background task result politely.
+    ///
+    /// Waits if currently speaking/processing, then delivers result via TTS.
+    /// This implements the "get back to you" promise - Jarvis proactively
+    /// interrupts with the answer when ready.
+    private func deliverBackgroundResult(_ status: TaskStatusResponse) async {
+        let text: String
+        if status.status == "done" {
+            text = status.result ?? "I finished looking into that but didn't find anything"
+        } else {
+            text = "I wasn't able to complete that search: \(status.error ?? "unknown error")"
+        }
+
+        // Wait if currently speaking/processing (be polite, don't interrupt)
+        while state == .speaking || state == .processing {
+            try? await Task.sleep(nanoseconds: 500_000_000)  // 500ms
+        }
+
+        // Deliver result
+        currentResponse = text
+        state = .speaking
+
+        // Enable voice conversation mode for result delivery
+        audioSessionManager.enableVoiceConversationMode()
+
+        do {
+            try await speakResponse(text)
+            state = .idle
+            audioSessionManager.disableVoiceConversationMode()
+        } catch {
+            print("❌ Failed to deliver background result: \(error)")
+            state = .error("Failed to deliver result: \(error.localizedDescription)")
+            audioSessionManager.disableVoiceConversationMode()
+        }
+    }
+
     /// Check if orchestrator is currently busy.
     var isBusy: Bool {
         return state != .idle && state != .error("")
@@ -307,12 +386,30 @@ struct OrchestrationResponse: Codable {
     let path: String
     let confidence: Double
     let conversationId: String?
+    let needsBackground: Bool
+    let taskId: String?
 
     enum CodingKeys: String, CodingKey {
         case answer
         case path
         case confidence
         case conversationId = "conversation_id"
+        case needsBackground = "needs_background"
+        case taskId = "task_id"
+    }
+}
+
+struct TaskStatusResponse: Codable {
+    let taskId: String
+    let status: String  // pending | running | done | failed
+    let result: String?
+    let error: String?
+
+    enum CodingKeys: String, CodingKey {
+        case taskId = "task_id"
+        case status
+        case result
+        case error
     }
 }
 
@@ -376,5 +473,41 @@ extension JarvisAPIClient {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         return try decoder.decode(OrchestrationResponse.self, from: data)
+    }
+
+    func getTaskStatus(taskId: String) async throws -> TaskStatusResponse {
+        guard let url = URL(string: "https://18.142.241.151:8443/api/v1/orchestrate/tasks/\(taskId)") else {
+            throw APIError.invalidURL
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+
+        // Add auth if available
+        if let token = UserDefaults.standard.string(forKey: "jarvis_access_token") {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+
+        // Use shared session with self-signed cert support
+        let sessionDelegate = SelfSignedCertificateDelegate()
+        let config = URLSessionConfiguration.default
+        let urlSession = URLSession(configuration: config, delegate: sessionDelegate, delegateQueue: nil)
+
+        let (data, response) = try await urlSession.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse
+        }
+
+        guard (200...299).contains(httpResponse.statusCode) else {
+            if let errorResponse = try? JSONDecoder().decode(ErrorResponse.self, from: data) {
+                throw APIError.serverError(errorResponse.detail)
+            }
+            throw APIError.httpError(httpResponse.statusCode)
+        }
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(TaskStatusResponse.self, from: data)
     }
 }
