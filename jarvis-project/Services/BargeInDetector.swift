@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import Combine
 
 /// Detects user interruption (barge-in) during TTS playback via Voice Activity Detection.
 ///

@@ -147,7 +147,7 @@ class ConversationOrchestrator: ObservableObject {
 
         // 3. Optional progress update (if >8s)
         var progressSent = false
-        for _ in 0..<16 {  // Check every 0.5s for 8s total
+        for iteration in 0..<16 {  // Check every 0.5s for 8s total
             try await Task.sleep(nanoseconds: 500_000_000)  // 0.5s
             if processingTask.isCancelled || Task.isCancelled {
                 processingTask.cancel()
@@ -155,7 +155,7 @@ class ConversationOrchestrator: ObservableObject {
             }
             // Check if processing task completed
             // Swift doesn't have Task.done, so we rely on timeout
-            if !progressSent && _ == 15 {  // 8 seconds elapsed
+            if !progressSent && iteration == 15 {  // 8 seconds elapsed
                 progressSent = true
                 try await speakImmediate("Still working on that")
             }
