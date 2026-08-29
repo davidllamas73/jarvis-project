@@ -60,6 +60,15 @@ struct ContentView: View {
             .task {
                 await loadHealthStatus()
                 setupWakeWord()
+
+                // Activating AVAudioSession immediately on first launch, before
+                // the audio hardware route has settled, is a known source of
+                // transient "Session activation failed" / AURemoteIO failures
+                // on real devices (seen live: input hw format invalid) - not
+                // reliably reproducible in Simulator, which is why this first
+                // showed up testing on a physical iPhone. A short delay before
+                // the first startListening() call avoids the race.
+                try? await Task.sleep(nanoseconds: 500_000_000)
                 wakeWordManager.startListening()
             }
             .onChange(of: scenePhase) { _, newPhase in

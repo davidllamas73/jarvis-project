@@ -96,7 +96,22 @@ class WakeWordManager: NSObject, ObservableObject {
         do {
             try configureAudioSession()
         } catch {
+            // Real-device hazard: activating AVAudioSession can transiently fail
+            // (e.g. right after app launch, before the hardware route settles).
+            // Retrying with backoff rather than giving up permanently, so a
+            // one-off failure doesn't disable wake-word for the rest of the
+            // session. Not routed through restartWithBackoff() - beginSession()
+            // can be called while isTransitioning is already held by
+            // restartSessionIfNeeded() further up the call stack, and that
+            // guard would silently no-op the retry in that case.
             print("❌ WakeWordManager: audio session failed to configure: \(error)")
+            consecutiveFailures += 1
+            let backoffSeconds = min(Double(1 << consecutiveFailures), 10.0)
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(backoffSeconds * 1_000_000_000))
+                guard let self, !self.isSuspended else { return }
+                self.startListening()
+            }
             return
         }
 
