@@ -25,8 +25,10 @@ import Foundation
 /// - LiveKit End-of-Turn: https://livekit.com/blog/using-a-transformer-to-improve-end-of-turn-detection
 /// - Deepgram utterance_end_ms: https://developers.deepgram.com/docs/utterance-end
 /// - Voice protocol design: wiki/concepts/voice-conversation-protocol-design.md
+/// Stateless rule-based classifier - no @Published state, so no ObservableObject
+/// conformance (Swift can't synthesize objectWillChange without at least one).
 @MainActor
-class SemanticEndpointDetector: ObservableObject {
+class SemanticEndpointDetector {
 
     // MARK: - Configuration
 
