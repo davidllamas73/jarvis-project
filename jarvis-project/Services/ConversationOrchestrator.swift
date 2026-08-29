@@ -109,14 +109,15 @@ class ConversationOrchestrator: ObservableObject {
                     audioSessionManager.disableVoiceConversationMode()
                 }
             } catch {
-                // Error - report to user
+                // Error - report to user. Fully handled here (state + cleanup), so
+                // not rethrown: currentTask is Task<Void, Never> since the caller
+                // awaits its .value without try.
                 print("❌ ConversationOrchestrator: error - \(error)")
                 await MainActor.run {
                     state = .error(error.localizedDescription)
                     isProcessing = false
                     audioSessionManager.disableVoiceConversationMode()
                 }
-                throw error
             }
         }
 
