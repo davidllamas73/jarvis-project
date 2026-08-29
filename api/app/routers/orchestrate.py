@@ -32,30 +32,33 @@ def should_use_agent(query: str) -> bool:
     """
     Decide whether to use agent path or fast path
 
-    Agent path indicators:
-    - Questions (who, what, where, when, why, how)
-    - Gap-filling scenarios ("I don't know", "find", "search for")
-    - Complex multi-step requests
-    - Explicit learning requests
+    Agent path is Claude with tool use (search_knowledge_base, find_documents,
+    extract_from_pdf, update_wiki_entity) in a loop - two-plus full Claude API
+    round trips per query, ~15-20s typical. Reserved for requests that actually
+    need to hunt for or write information, not plain questions.
 
-    Fast path:
-    - Simple factual lookups
-    - Known entities
-    - Direct retrieval
+    Fast path is a single Claude-post-processed RAG call (~4-5s typical) - it
+    already handles ordinary "what/who/how/can you tell me" questions well,
+    since it's Claude reasoning over retrieved context, not raw retrieval.
+
+    Previously almost every question word ("what", "how", "can you", ...)
+    routed to the agent path, since ordinary spoken queries are overwhelmingly
+    phrased as questions - this made the slow path the default for most real
+    voice traffic instead of the exception.
     """
     query_lower = query.lower()
 
-    # Question words suggest agent path
-    question_words = ["who", "what", "where", "when", "why", "how", "can you", "could you"]
-    if any(q in query_lower for q in question_words):
+    # Explicit multi-step / gap-filling requests still need the agent's tools
+    agent_keywords = [
+        "search for", "look for", "find and update",
+        "missing", "don't know", "update my wiki", "update the wiki",
+        "extract from", "update wiki"
+    ]
+    if any(k in query_lower for k in agent_keywords):
         return True
 
-    # Gap-filling keywords
-    gap_keywords = ["find", "search for", "look for", "missing", "don't know"]
-    if any(k in query_lower for k in gap_keywords):
-        return True
-
-    # Default to fast path for simple queries
+    # Everything else - including plain factual questions - defaults to the
+    # fast path.
     return False
 
 
