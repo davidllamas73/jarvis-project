@@ -2,9 +2,6 @@ import Foundation
 import Speech
 import AVFoundation
 import Combine
-import os
-
-private let diagLog = Logger(subsystem: "com.jarvis.debug", category: "wakeword-diag")
 
 /// Continuous on-device listener for wake/sleep phrases.
 /// "Hey Jarvis" -> wakes the app (ready to take a query)
@@ -91,8 +88,6 @@ class WakeWordManager: NSObject, ObservableObject {
             return
         }
 
-        diagLog.fault("DIAG: supportsOnDeviceRecognition=\(speechRecognizer.supportsOnDeviceRecognition)")
-
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
         request.requiresOnDeviceRecognition = true // keep wake-word audio on-device
@@ -117,18 +112,8 @@ class WakeWordManager: NSObject, ObservableObject {
         }
 
         inputNode.removeTap(onBus: 0)
-        var diagBufferCount = 0
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
             self?.recognitionRequest?.append(buffer)
-
-            diagBufferCount += 1
-            if diagBufferCount % 50 == 0, let channelData = buffer.floatChannelData {
-                let frames = Int(buffer.frameLength)
-                var sum: Float = 0
-                for i in 0..<frames { sum += channelData[0][i] * channelData[0][i] }
-                let rms = frames > 0 ? (sum / Float(frames)).squareRoot() : 0
-                diagLog.fault("DIAG: tap buffer #\(diagBufferCount), rms=\(rms)")
-            }
         }
 
         do {
@@ -147,9 +132,6 @@ class WakeWordManager: NSObject, ObservableObject {
 
             if let result {
                 let heard = result.bestTranscription.formattedString.lowercased()
-                if !heard.isEmpty {
-                    diagLog.fault("DIAG: partial transcript = '\(heard)', isFinal=\(result.isFinal)")
-                }
                 self.evaluate(heard)
             }
 
