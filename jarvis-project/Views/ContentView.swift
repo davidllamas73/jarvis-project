@@ -406,6 +406,7 @@ struct ContentView: View {
 
         // Wire barge-in detection (Phase 3)
         conversationOrchestrator.audioEngine = wakeWordManager.audioEngine
+        conversationOrchestrator.wakeWordManager = wakeWordManager
         conversationOrchestrator.onBargeIn = {
             Task { @MainActor in
                 await handleBargeInInterruption()

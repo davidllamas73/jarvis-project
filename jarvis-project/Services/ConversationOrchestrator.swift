@@ -52,6 +52,20 @@ class ConversationOrchestrator: ObservableObject {
     /// Reference to AVAudioEngine for barge-in detection (must be set externally)
     weak var audioEngine: AVAudioEngine?
 
+    /// Reference to WakeWordManager, set externally alongside audioEngine.
+    ///
+    /// WakeWordManager and BargeInDetector both install taps on the same
+    /// AVAudioEngine.inputNode/bus 0 - a hardware resource with exactly one
+    /// tap slot, not something either class can assume it owns exclusively.
+    /// The foreground query flow already coordinates this correctly via
+    /// suspendForActiveQuery()/resumeAfterActiveQuery() in ContentView, but
+    /// deliverBackgroundResult() below runs on its own schedule (whenever a
+    /// background task finishes) and has no natural place in that flow -
+    /// without this reference it can arm BargeInDetector's tap while
+    /// WakeWordManager is mid-session on the same node, crashing CoreAudio's
+    /// "nullptr == Tap()" assertion.
+    weak var wakeWordManager: WakeWordManager?
+
     /// Callback when user interrupts (barge-in) - should start new query capture
     var onBargeIn: (() -> Void)?
 
@@ -356,6 +370,11 @@ class ConversationOrchestrator: ObservableObject {
         // Enable voice conversation mode for result delivery
         audioSessionManager.enableVoiceConversationMode()
 
+        // Suspend wake-word listening before touching the shared input node's
+        // tap - same coordination ContentView already does around foreground
+        // queries, needed here too since this runs on its own schedule.
+        wakeWordManager?.suspendForActiveQuery()
+
         do {
             try await speakResponse(text)
             state = .idle
@@ -365,6 +384,8 @@ class ConversationOrchestrator: ObservableObject {
             state = .error("Failed to deliver result: \(error.localizedDescription)")
             audioSessionManager.disableVoiceConversationMode()
         }
+
+        wakeWordManager?.resumeAfterActiveQuery()
     }
 
     /// Check if orchestrator is currently busy.
