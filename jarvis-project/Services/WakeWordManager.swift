@@ -147,6 +147,9 @@ class WakeWordManager: NSObject, ObservableObject {
 
             if let result {
                 let heard = result.bestTranscription.formattedString.lowercased()
+                if !heard.isEmpty {
+                    diagLog.fault("DIAG: partial transcript = '\(heard)', isFinal=\(result.isFinal)")
+                }
                 self.evaluate(heard)
             }
 
