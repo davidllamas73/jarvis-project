@@ -203,7 +203,14 @@ class WakeWordManager: NSObject, ObservableObject {
     private func configureAudioSession() throws {
         #if os(iOS)
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playAndRecord, mode: .measurement, options: [.duckOthers, .defaultToSpeaker, .allowBluetooth])
+        // .measurement mode disables the system's usual audio processing and is
+        // stricter about session priority than .default - on a real device this
+        // was failing every activation attempt with OSStatus 561015905 ("!pla",
+        // a category/priority conflict), not just transiently at launch as
+        // first suspected. Wake-word detection doesn't need measurement-grade
+        // signal precision, just clean speech audio for SFSpeechRecognizer, so
+        // .default is both sufficient and markedly less prone to this failure.
+        try session.setCategory(.playAndRecord, mode: .default, options: [.duckOthers, .defaultToSpeaker, .allowBluetooth])
         try session.setActive(true, options: .notifyOthersOnDeactivation)
         #endif
     }
