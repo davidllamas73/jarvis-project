@@ -43,34 +43,23 @@ class NativeTTSManager: NSObject, ObservableObject {
         synthesizer.delegate = self
     }
 
-    /// Speak text instantly using native TTS
+    /// Speak text instantly using native TTS.
+    ///
+    /// Implemented on top of speakStream()'s generation-counter/queue machinery
+    /// rather than its own continuation: a standalone continuation here raced
+    /// with the didFinish/didCancel delegate callbacks whenever a new speak()
+    /// call landed while the synthesizer was still settling from the previous
+    /// one (e.g. the immediate ack, "still working on that" progress update,
+    /// and final response spoken back to back by ConversationOrchestrator) -
+    /// the continuation could be leaked and never resumed, hanging the caller
+    /// forever with no speech and no error.
     func speak(_ text: String, rate: Float = 0.52, pitch: Float = 1.0) async {
-        // Stop any ongoing speech
-        if synthesizer.isSpeaking {
-            synthesizer.stopSpeaking(at: .immediate)
+        let stream = AsyncThrowingStream<String, Error> { continuation in
+            continuation.yield(text)
+            continuation.finish()
         }
-
-        let utterance = AVSpeechUtterance(string: text)
-        utterance.voice = Self.voice
-
-        // Configure for natural speech
-        utterance.rate = rate  // 0.52 is slightly faster than default but natural
-        utterance.pitchMultiplier = pitch
-        utterance.volume = 1.0
-
-        isSpeaking = true
-        synthesizer.speak(utterance)
-
-        print("Native TTS speaking: '\(text.prefix(50))...'")
-
-        // Wait for speech to finish
-        await withCheckedContinuation { continuation in
-            // Store continuation to resume when speech finishes
-            speechContinuation = continuation
-        }
+        try? await speakStream(stream, rate: rate, pitch: pitch)
     }
-
-    private var speechContinuation: CheckedContinuation<Void, Never>?
 
     /// Stop current speech
     func stop() {
@@ -236,8 +225,6 @@ extension NativeTTSManager: AVSpeechSynthesizerDelegate {
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
         print("TTS finished")
         Task { @MainActor in
-            self.speechContinuation?.resume()
-            self.speechContinuation = nil
             self.finishOneQueuedUtterance()
         }
     }
@@ -245,8 +232,6 @@ extension NativeTTSManager: AVSpeechSynthesizerDelegate {
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
         print("TTS cancelled")
         Task { @MainActor in
-            self.speechContinuation?.resume()
-            self.speechContinuation = nil
             self.finishOneQueuedUtterance()
         }
     }

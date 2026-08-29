@@ -138,32 +138,42 @@ class ConversationOrchestrator: ObservableObject {
 
         guard !Task.isCancelled else { throw CancellationError() }
 
-        // 2. Background processing
+        // 2. Background processing, with an optional progress update if it runs
+        // past 8s. Races the actual orchestrate() call against an 8s timer in a
+        // task group instead of always sleeping the full window - the previous
+        // version slept through all 16 iterations unconditionally even after the
+        // response was ready, silently delaying every reply by up to 8s.
         state = .processing
 
-        // Start processing task
-        let processingTask = Task {
-            try await apiClient.orchestrate(query: query, sessionId: sessionId)
-        }
+        let response: OrchestrationResponse = try await withThrowingTaskGroup(of: OrchestrationResponseOrTimeout.self) { group in
+            group.addTask {
+                .response(try await self.apiClient.orchestrate(query: query, sessionId: sessionId))
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: 8_000_000_000)
+                return .timeout
+            }
 
-        // 3. Optional progress update (if >8s)
-        var progressSent = false
-        for iteration in 0..<16 {  // Check every 0.5s for 8s total
-            try await Task.sleep(nanoseconds: 500_000_000)  // 0.5s
-            if processingTask.isCancelled || Task.isCancelled {
-                processingTask.cancel()
+            guard let first = try await group.next() else {
                 throw CancellationError()
             }
-            // Check if processing task completed
-            // Swift doesn't have Task.done, so we rely on timeout
-            if !progressSent && iteration == 15 {  // 8 seconds elapsed
-                progressSent = true
-                try await speakImmediate("Still working on that")
+
+            switch first {
+            case .response(let response):
+                group.cancelAll()
+                return response
+            case .timeout:
+                guard !Task.isCancelled else {
+                    group.cancelAll()
+                    throw CancellationError()
+                }
+                try await self.speakImmediate("Still working on that")
+                guard let second = try await group.next(), case .response(let response) = second else {
+                    throw CancellationError()
+                }
+                return response
             }
         }
-
-        // 4. Get result
-        let response = try await processingTask.value
 
         guard !Task.isCancelled else { throw CancellationError() }
 
@@ -282,6 +292,13 @@ class ConversationOrchestrator: ObservableObject {
     var isBusy: Bool {
         return state != .idle && state != .error("")
     }
+}
+
+/// Result of racing the orchestrate() call against an 8s progress-update timer
+/// in processWithSSE() - lets the task group tell which one finished first.
+private enum OrchestrationResponseOrTimeout {
+    case response(OrchestrationResponse)
+    case timeout
 }
 
 /// Response model matching backend OrchestResponse
