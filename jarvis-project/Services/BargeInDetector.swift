@@ -39,12 +39,6 @@ class BargeInDetector: ObservableObject {
     /// Minimum sustained voice duration to trigger barge-in (250ms reduces false positives)
     private let minVoiceDuration: TimeInterval = 0.25
 
-    /// Sample rate for audio analysis (matches AVAudioEngine default)
-    private let sampleRate: Double = 44100.0
-
-    /// Audio format for tap installation
-    private let audioFormat: AVAudioFormat
-
     // MARK: - State
 
     /// Whether barge-in detection is currently armed (only during TTS playback)
@@ -63,21 +57,6 @@ class BargeInDetector: ObservableObject {
     private weak var audioEngine: AVAudioEngine?
     private var inputNode: AVAudioInputNode?
 
-    // MARK: - Initialization
-
-    init() {
-        // Initialize audio format (mono, 44.1kHz, float32)
-        guard let format = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: sampleRate,
-            channels: 1,
-            interleaved: false
-        ) else {
-            fatalError("Failed to create audio format for BargeInDetector")
-        }
-        self.audioFormat = format
-    }
-
     // MARK: - Public Methods
 
     /// Arm barge-in detection during TTS playback.
@@ -93,12 +72,22 @@ class BargeInDetector: ObservableObject {
         }
 
         self.audioEngine = audioEngine
-        self.inputNode = audioEngine.inputNode
+        let inputNode = audioEngine.inputNode
+        self.inputNode = inputNode
 
-        // Install tap on input node to monitor mic audio
+        // Must use the node's actual native format, not a hardcoded one - installTap
+        // with a mismatched format crashes AVAudioEngine with an uncatchable
+        // NSException ("Failed to create tap due to format mismatch"), same hazard
+        // WakeWordManager.beginSession() already guards against.
+        let format = inputNode.outputFormat(forBus: 0)
+        guard format.channelCount > 0, format.sampleRate > 0 else {
+            print("❌ BargeInDetector: invalid input format (\(format)), aborting arm")
+            return
+        }
+
         let bufferSize: AVAudioFrameCount = 1024 // ~23ms at 44.1kHz
 
-        inputNode?.installTap(onBus: 0, bufferSize: bufferSize, format: audioFormat) { [weak self] buffer, time in
+        inputNode.installTap(onBus: 0, bufferSize: bufferSize, format: format) { [weak self] buffer, time in
             guard let self = self, self.isArmed else { return }
             self.processAudioBuffer(buffer)
         }
