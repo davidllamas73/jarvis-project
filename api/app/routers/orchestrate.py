@@ -1,6 +1,7 @@
 """
 Orchestration Router
 Smart routing between fast path (RAG) and agent path (reasoning)
+with async background task support for long-running queries
 """
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
@@ -11,6 +12,7 @@ import asyncio
 
 from app.services.orchestration_agent import jarvis_agent
 from app.services.jarvis_service import jarvis_service
+from app.services.task_store import task_store, TaskStatus
 
 router = APIRouter(prefix="/orchestrate", tags=["orchestration"])
 
@@ -23,9 +25,19 @@ class OrchestQuery(BaseModel):
 
 class OrchestResponse(BaseModel):
     answer: str
-    path: str  # "fast" or "agent"
+    path: str  # "fast", "agent", or "background"
     confidence: float
     conversation_id: Optional[str] = None
+    needs_background: bool = False  # NEW: signals client to poll for result
+    task_id: Optional[str] = None   # NEW: task ID for polling
+
+
+class TaskStatusResponse(BaseModel):
+    """Response for task status polling"""
+    task_id: str
+    status: str  # pending | running | done | failed
+    result: Optional[str] = None
+    error: Optional[str] = None
 
 
 def should_use_agent(query: str) -> bool:
@@ -62,40 +74,151 @@ def should_use_agent(query: str) -> bool:
     return False
 
 
+def generate_interim_response(query: str) -> str:
+    """
+    Generate friendly interim response when falling back to background agent mode.
+
+    Returns short, natural phrase for immediate TTS while background task runs.
+    """
+    query_lower = query.lower()
+
+    # Search/find queries
+    if any(word in query_lower for word in ["search", "find", "look for"]):
+        return "I'm not fully sure, let me search through everything and get back to you"
+
+    # Complex analysis
+    if any(word in query_lower for word in ["analyze", "compare", "how does"]):
+        return "That's a good question. Let me look into that further and I'll let you know"
+
+    # Default
+    return "I'm not fully sure about that. Let me research it and get back to you"
+
+
+async def _run_agent_task(task_id: str, query: str):
+    """
+    Background task runner - executes agent query asynchronously
+
+    Runs in fire-and-forget mode (not awaited by request handler).
+    Updates task_store with result or error when done.
+    """
+    try:
+        print(f"🔥 Background task {task_id} starting...")
+        task_store.mark_running(task_id)
+
+        # Run the full agent path (multi-step tool use, can take 15-30s+)
+        result = await jarvis_agent.process_query(query)
+
+        task_store.mark_done(task_id, result)
+        print(f"✅ Background task {task_id} completed successfully")
+
+    except Exception as e:
+        error_msg = f"Agent task failed: {str(e)}"
+        task_store.mark_failed(task_id, error_msg)
+        print(f"❌ Background task {task_id} failed: {error_msg}")
+
+
 @router.post("", response_model=OrchestResponse)
 async def orchestrate_query(request: OrchestQuery):
     """
-    Smart routing endpoint
-    Routes to either fast path (RAG) or agent path (reasoning)
-    Both paths now use Claude to generate natural conversational responses
+    Smart routing endpoint with async background task support
+
+    Flow:
+    1. If explicit agent keywords OR user forces agent: background mode
+    2. Otherwise: try fast path
+    3. If fast path confidence < 0.7: fall back to background mode
+    4. Background mode: return immediately with task_id, kick off agent in background
+
+    Routes to either fast path (RAG) or background agent path (tool use)
     """
     try:
-        # Determine path
+        # Check for explicit agent keywords (always goes to background)
         if request.use_agent is None:
-            use_agent = should_use_agent(request.query)
+            force_agent = should_use_agent(request.query)
         else:
-            use_agent = request.use_agent
+            force_agent = request.use_agent
 
-        if use_agent:
-            # Agent path: Full conversational reasoning with tool use
-            answer = await jarvis_agent.process_query(request.query)
-            path = "agent"
-            confidence = 0.85  # Agent provides high-confidence reasoned answers
-        else:
-            # Fast path: RAG + Claude post-processing for natural response
-            answer = await jarvis_service.rag_query_with_claude(request.query, context_size=5)
-            path = "fast"
-            confidence = 0.80  # RAG with Claude processing provides good confidence
+        if force_agent:
+            # Explicit agent keywords - skip fast path, go straight to background
+            print(f"🎯 Agent keywords detected, going to background mode")
+            task = task_store.create(request.query)
+            asyncio.create_task(_run_agent_task(task.task_id, request.query))
 
-        return OrchestResponse(
-            answer=answer,
-            path=path,
-            confidence=confidence,
+            return OrchestResponse(
+                answer=generate_interim_response(request.query),
+                path="background",
+                confidence=0.0,  # Not based on RAG match
+                conversation_id=request.conversation_id,
+                needs_background=True,
+                task_id=task.task_id
+            )
+
+        # Try fast path first
+        print(f"🏃 Trying fast path for: '{request.query[:50]}...'")
+        answer, confidence = await jarvis_service.rag_query_with_claude(
+            request.query,
+            context_size=5,
             conversation_id=request.conversation_id
         )
 
+        print(f"📊 Fast path result: confidence={confidence:.3f}")
+
+        # Adaptive threshold accounts for embedding quality reality
+        # Before async implementation: fake confidence scores (0.80/0.85) hid this issue
+        # After: real ChromaDB scores exposed that wiki embeddings return 0.15-0.40 for valid matches
+        # Agent's internal search achieves 0.35-0.42 for same queries (better query formulation)
+        # Setting to 0.15 allows most valid matches through fast path
+        # Lower matches go to background agent which finds better results
+        CONFIDENCE_THRESHOLD = 0.15
+
+        # If confidence is good, return immediately
+        if confidence >= CONFIDENCE_THRESHOLD:
+            print(f"✅ Fast path succeeded (confidence {confidence:.3f} >= {CONFIDENCE_THRESHOLD})")
+            return OrchestResponse(
+                answer=answer,
+                path="fast",
+                confidence=confidence,
+                conversation_id=request.conversation_id,
+                needs_background=False
+            )
+
+        # Low confidence - fall back to background agent mode
+        print(f"⚠️ Fast path low confidence ({confidence:.3f} < {CONFIDENCE_THRESHOLD}), falling back to background agent")
+        task = task_store.create(request.query)
+        asyncio.create_task(_run_agent_task(task.task_id, request.query))
+
+        return OrchestResponse(
+            answer=generate_interim_response(request.query),
+            path="background",
+            confidence=confidence,
+            conversation_id=request.conversation_id,
+            needs_background=True,
+            task_id=task.task_id
+        )
+
     except Exception as e:
+        print(f"❌ Orchestration error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Orchestration failed: {str(e)}")
+
+
+@router.get("/tasks/{task_id}", response_model=TaskStatusResponse)
+async def get_task_status(task_id: str):
+    """
+    Poll endpoint for background task status
+
+    Client polls this every ~3s while waiting for background result.
+    Returns task status and result/error when complete.
+    """
+    task = task_store.get(task_id)
+
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+    return TaskStatusResponse(
+        task_id=task.task_id,
+        status=task.status.value,
+        result=task.result,
+        error=task.error
+    )
 
 
 @router.post("/reset")
@@ -175,10 +298,14 @@ async def orchestrate_stream(request: OrchestQuery):
             path = "agent" if use_agent else "fast"
 
             # 3. START PROCESSING (potentially long-running)
-            processing_task = asyncio.create_task(
-                jarvis_agent.process_query(request.query) if use_agent
-                else jarvis_service.rag_query_with_claude(request.query, context_size=5)
-            )
+            if use_agent:
+                processing_task = asyncio.create_task(
+                    jarvis_agent.process_query(request.query)
+                )
+            else:
+                processing_task = asyncio.create_task(
+                    jarvis_service.rag_query_with_claude(request.query, context_size=5)
+                )
 
             # 4. OPTIONAL PROGRESS UPDATE (if >8s)
             progress_sent = False
@@ -192,7 +319,14 @@ async def orchestrate_stream(request: OrchestQuery):
                     yield f"data: {json.dumps({'text': 'Still working on that'})}\n\n"
 
             # 5. GET RESULT
-            answer = await processing_task
+            result = await processing_task
+
+            # Handle tuple return from fast path (answer, confidence)
+            if isinstance(result, tuple):
+                answer, confidence = result
+            else:
+                answer = result
+                confidence = 0.85
 
             # 6. STREAM RESPONSE IN CHUNKS
             # For now, send full response as single chunk
@@ -201,7 +335,6 @@ async def orchestrate_stream(request: OrchestQuery):
             yield f"data: {json.dumps({'text': answer})}\n\n"
 
             # 7. FINAL COMPLETION
-            confidence = 0.85 if use_agent else 0.80
             yield f"event: done\n"
             yield f"data: {json.dumps({
                 'answer': answer,

@@ -76,24 +76,73 @@ class JarvisService:
 
     def _expand_query(self, query: str) -> str:
         """
-        Expand query to resolve personal pronouns and add context
+        Expand query to resolve personal pronouns and add semantic context
+
+        Improvements:
+        - Semantic enrichment for common query patterns
+        - Better matching for achievement/experience queries
+        - Company name extraction and context expansion
 
         Maps for conversational understanding:
         - "I", "me", "my" -> David Llamas Varona (the owner/speaker)
         - "you", "your" (in Jarvis context) -> Jarvis AI assistant
         """
+        import re
         query_lower = query.lower()
+
+        # Extract company names for context (common companies in David's history)
+        companies = {
+            'central retail': 'Central Retail Corporation CRC Thailand',
+            'crc': 'Central Retail Corporation Thailand',
+            'thai union': 'Thai Union Group TUG Thailand seafood',
+            'alshaya': 'Alshaya Group Kuwait Middle East retail',
+            'harrods': 'Harrods luxury retail London UK',
+            'cocosa': 'COCOSA.com marketplace CEO founder',
+            'gloria': 'Gloria Jeans coffee retail',
+            'map': 'MAP Indonesia Mitra Adiperkasa retail',
+        }
+
+        mentioned_company = None
+        for company_key, company_expansion in companies.items():
+            if company_key in query_lower:
+                mentioned_company = company_expansion
+                break
+
+        # Semantic patterns for achievement queries (most common in voice)
+        # These expand to include related terms that boost semantic similarity
+        achievement_patterns = [
+            (r'\b(what|tell me about|describe) (were |are )?my achievements?\b',
+             'David Llamas achievements accomplishments impact results growth transformation'),
+            (r'\bmy (achievements?|accomplishments?) (at|with|in)\b',
+             'achievements accomplishments impact results transformation revenue growth digital'),
+            (r'\b(what|how) did I (do|accomplish|achieve)\b',
+             'David Llamas accomplishments achievements impact results'),
+            (r'\bmy (experience|background|career|work)\b',
+             'David Llamas experience career background achievements companies roles'),
+            (r'\bmy (role|position|title) (at|with|in)\b',
+             'role position responsibilities leadership achievements'),
+            (r'\b(what|how) was my (impact|contribution)\b',
+             'impact transformation results achievements growth revenue'),
+        ]
+
+        # Check for achievement patterns with company context
+        for pattern, semantic_expansion in achievement_patterns:
+            if re.search(pattern, query_lower):
+                # If company mentioned, combine expansion with company context
+                if mentioned_company:
+                    return f"{mentioned_company} {semantic_expansion}"
+                return semantic_expansion
 
         # Patterns for David (owner) identity queries
         david_identity_patterns = [
-            ("who am i", "David Llamas Varona identity background experience"),
+            ("who am i", "David Llamas Varona identity background experience career"),
             ("what is my", "David Llamas"),
             ("what are my", "David Llamas"),
-            ("tell me about me", "David Llamas Varona background career"),
-            ("my background", "David Llamas Varona background experience career"),
-            ("my experience", "David Llamas Varona experience career achievements"),
-            ("my achievements", "David Llamas Varona achievements career"),
-            ("my career", "David Llamas Varona career history companies"),
+            ("tell me about me", "David Llamas Varona background career achievements experience"),
+            ("my background", "David Llamas Varona background experience career education companies"),
+            ("my experience", "David Llamas Varona experience career achievements roles companies"),
+            ("my achievements", "David Llamas Varona achievements accomplishments impact transformation"),
+            ("my career", "David Llamas Varona career history companies roles achievements"),
         ]
 
         # Patterns for Jarvis (assistant) identity queries
@@ -117,11 +166,14 @@ class JarvisService:
                 return expansion
 
         # Replace standalone first-person pronouns with "David Llamas"
-        import re
         expanded = query
         expanded = re.sub(r'\bI\b', 'David Llamas', expanded, flags=re.IGNORECASE)
         expanded = re.sub(r'\bme\b', 'David Llamas', expanded, flags=re.IGNORECASE)
         expanded = re.sub(r'\bmy\b', 'David Llamas', expanded, flags=re.IGNORECASE)
+
+        # If company mentioned, append company context for better matching
+        if mentioned_company and mentioned_company not in expanded:
+            expanded = f"{expanded} {mentioned_company}"
 
         # Handle standalone "you" - need to determine context
         # This is tricky because Whisper might transcribe:
@@ -268,7 +320,7 @@ class JarvisService:
         # TODO: Integrate with Claude API for better answers
         return f"Based on the knowledge base, here's what I found:\n\n{context[:500]}..."
 
-    async def rag_query_with_claude(self, query: str, context_size: int = 5, conversation_id: Optional[str] = None) -> str:
+    async def rag_query_with_claude(self, query: str, context_size: int = 5, conversation_id: Optional[str] = None) -> tuple[str, float]:
         """
         RAG query with Claude post-processing for natural conversational responses
 
@@ -280,9 +332,12 @@ class JarvisService:
         Args:
             query: User question
             context_size: Number of context chunks to retrieve
+            conversation_id: Optional conversation ID for history tracking
 
         Returns:
-            Natural conversational response from Claude
+            Tuple of (answer, confidence_score)
+            - answer: Natural conversational response from Claude
+            - confidence_score: Top match confidence (0.0-1.0), based on vector similarity
         """
         from anthropic import AsyncAnthropic
         import os
@@ -291,7 +346,11 @@ class JarvisService:
         sources = self.search(query, n_results=context_size, use_hybrid=True)
 
         if not sources:
-            return "I don't have information about that in my knowledge base yet. Would you like me to search for documents that might contain this information?"
+            return "I don't have information about that in my knowledge base yet. Would you like me to search for documents that might contain this information?", 0.0
+
+        # Extract top match confidence (this is what triggers background mode)
+        top_confidence = sources[0].score if sources else 0.0
+        print(f"🎯 Top match confidence: {top_confidence:.3f}")
 
         # Step 1.5: Get conversation history if conversation_id provided
         conversation_history = []
@@ -380,7 +439,7 @@ Answer naturally and briefly (1-2 sentences). Sound like a helpful friend."""
             self.conversations[conversation_id] = self.conversations[conversation_id][-self.max_history_turns:]
             print(f"💾 Stored turn in conversation {conversation_id}: now {len(self.conversations[conversation_id])} turns")
 
-        return answer
+        return answer, top_confidence
 
     def get_interview_brief(
         self,
