@@ -1,3 +1,10 @@
 .claude/
+.claude/settings.local.json
 .DS_Store
 xcuserdata/
+.env
+.env.local
+*.log
+__pycache__/
+node_modules/
+audits/

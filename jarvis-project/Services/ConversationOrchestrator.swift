@@ -401,20 +401,24 @@ private enum OrchestrationResponseOrTimeout {
     case timeout
 }
 
-/// Response model matching backend OrchestResponse
+/// Response model matching backend TieredOrchestResponse
 struct OrchestrationResponse: Codable {
     let answer: String
+    let tier: String
     let path: String
     let confidence: Double
     let conversationId: String?
+    let acknowledgment: String?
     let needsBackground: Bool
     let taskId: String?
 
     enum CodingKeys: String, CodingKey {
         case answer
+        case tier
         case path
         case confidence
         case conversationId = "conversation_id"
+        case acknowledgment
         case needsBackground = "needs_background"
         case taskId = "task_id"
     }
@@ -436,30 +440,26 @@ struct TaskStatusResponse: Codable {
 
 /// Extension to JarvisAPIClient for orchestration endpoint
 extension JarvisAPIClient {
-    func orchestrate(query: String, sessionId: String, useAgent: Bool? = nil) async throws -> OrchestrationResponse {
+    func orchestrate(query: String, sessionId: String) async throws -> OrchestrationResponse {
         struct OrchestRequest: Codable {
             let query: String
-            let useAgent: Bool?
             let conversationId: String?
 
             enum CodingKeys: String, CodingKey {
                 case query
-                case useAgent = "use_agent"
                 case conversationId = "conversation_id"
             }
         }
 
         let requestBody = OrchestRequest(
             query: query,
-            useAgent: useAgent,
             conversationId: sessionId
         )
 
         let bodyData = try JSONEncoder().encode(requestBody)
 
-        // Use existing makeRequest pattern - requires making it internal
-        // For now, manually construct request (matches makeRequest implementation)
-        guard let url = URL(string: "https://18.142.241.151:8443/api/v1/orchestrate") else {
+        // UPDATED: Changed from /orchestrate to /orchestrate/tiered
+        guard let url = URL(string: "\(self.baseURL)/orchestrate/tiered") else {
             throw APIError.invalidURL
         }
 
@@ -468,7 +468,8 @@ extension JarvisAPIClient {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = bodyData
 
-        // Add auth if available
+        // Auth not required for /orchestrate/tiered per backend config
+        // but include it if available for future compatibility
         if let token = UserDefaults.standard.string(forKey: "jarvis_access_token") {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
