@@ -13,6 +13,7 @@ import asyncio
 from app.services.orchestration_agent import jarvis_agent
 from app.services.jarvis_service import jarvis_service
 from app.services.task_store import task_store, TaskStatus
+from app.services.query_classifier import query_classifier, QueryTier
 
 router = APIRouter(prefix="/orchestrate", tags=["orchestration"])
 
@@ -355,5 +356,425 @@ async def orchestrate_stream(request: OrchestQuery):
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no"  # Disable nginx buffering
+        }
+    )
+
+
+# ============================================================================
+# TIERED ROUTING (4-Tier Architecture)
+# ============================================================================
+
+class TieredOrchestQuery(BaseModel):
+    query: str
+    conversation_id: Optional[str] = None
+    force_tier: Optional[str] = None  # Optional override: "conversational", "knowledge", "research", "task"
+
+
+class TieredOrchestResponse(BaseModel):
+    answer: str
+    tier: str  # "conversational", "knowledge", "research", or "task"
+    confidence: float
+    path: str  # "direct", "rag", "web", "agent"
+    latency_ms: int
+    conversation_id: Optional[str] = None
+    acknowledgment: Optional[str] = None  # Immediate response for TTS
+    needs_background: bool = False
+    task_id: Optional[str] = None
+
+
+def generate_tier_acknowledgment(tier: QueryTier, query: str) -> str:
+    """
+    Generate tier-specific acknowledgment for immediate TTS feedback.
+
+    Meets 200-300ms human baseline for natural conversation flow.
+    """
+    if tier == QueryTier.CONVERSATIONAL:
+        # No acknowledgment - respond immediately
+        return None
+
+    elif tier == QueryTier.KNOWLEDGE:
+        # "Let me look that up..." (personal knowledge)
+        query_lower = query.lower()
+        if any(word in query_lower for word in ["achievement", "accomplishment", "work", "role"]):
+            return "Let me check your records"
+        elif any(word in query_lower for word in ["who is", "tell me about"]):
+            return "Let me look that up"
+        else:
+            return "Let me check that for you"
+
+    elif tier == QueryTier.RESEARCH:
+        # "Let me search for that..." (external knowledge)
+        query_lower = query.lower()
+        if any(word in query_lower for word in ["latest", "recent", "news"]):
+            return "Let me find the latest information"
+        elif any(word in query_lower for word in ["what is", "who is"]):
+            return "Let me search for that"
+        else:
+            return "Let me look that up online"
+
+    elif tier == QueryTier.TASK:
+        # "Let me complete that for you now..." (complex task)
+        query_lower = query.lower()
+        if any(word in query_lower for word in ["write", "draft", "compose"]):
+            return "I'll draft that for you"
+        elif any(word in query_lower for word in ["analyze", "review", "assess"]):
+            return "Let me analyze that for you"
+        elif any(word in query_lower for word in ["code", "implement", "build"]):
+            return "I'll work on that now"
+        else:
+            return "Let me complete that for you"
+
+    return None
+
+
+async def handle_conversational_query(query: str, conversation_id: Optional[str]) -> tuple[str, float]:
+    """
+    T1: Conversational handler - Direct Claude response (no tools)
+
+    Uses Claude Haiku for fast, natural conversation.
+    Target latency: <500ms TTFT
+    Cost: ~$0.0001/query
+    """
+    from anthropic import AsyncAnthropic
+    import os
+
+    client = AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+
+    # Simple system prompt for conversational queries
+    system_prompt = """You are Jarvis, David Llamas' personal AI assistant.
+
+You are helpful, friendly, and conversational. Keep responses natural and concise.
+For simple greetings and pleasantries, respond warmly and briefly."""
+
+    try:
+        response = await client.messages.create(
+            model="claude-haiku-4-20250514",  # Fast, cheap model for T1
+            max_tokens=150,  # Short responses for conversational queries
+            system=system_prompt,
+            messages=[{
+                "role": "user",
+                "content": query
+            }]
+        )
+
+        answer = response.content[0].text
+        confidence = 0.95  # High confidence for conversational matches
+
+        return answer, confidence
+
+    except Exception as e:
+        print(f"❌ Conversational handler error: {str(e)}")
+        return "I'm having trouble right now. Could you try again?", 0.5
+
+
+async def handle_knowledge_query(query: str, conversation_id: Optional[str]) -> tuple[str, float]:
+    """
+    T2: Knowledge handler - Haiku + RAG (wiki/brain)
+
+    Uses existing jarvis_service RAG pipeline with Haiku for faster response.
+    Target latency: 2-5s
+    Cost: ~$0.002/query
+    """
+    # Use existing RAG service (already optimized for personal knowledge)
+    answer, confidence = await jarvis_service.rag_query_with_claude(
+        query,
+        context_size=5,
+        conversation_id=conversation_id
+    )
+
+    return answer, confidence
+
+
+async def handle_research_query(query: str, conversation_id: Optional[str]) -> tuple[str, float]:
+    """
+    T3: Research handler - Sonnet + Web search
+
+    Performs web search and uses Claude Sonnet for synthesis.
+    Target latency: 5-10s
+    Cost: ~$0.03/query
+
+    TODO: Integrate actual web search capability (Perplexity API, Tavily, or similar)
+    For now, falls back to agent path which can use web search tools.
+    """
+    # Placeholder - fall back to agent path for now
+    # In production, would integrate web search API here
+    print(f"⚠️ Research tier not fully implemented - falling back to agent path")
+    result = await jarvis_agent.process_query(query)
+    return result, 0.75
+
+
+async def handle_task_query(query: str, conversation_id: Optional[str]) -> tuple[str, float]:
+    """
+    T4: Task handler - Full agent with tools
+
+    Uses existing orchestration_agent with full tool access.
+    Target latency: 10-90s
+    Cost: ~$0.10/query
+    """
+    # Use existing agent path (already has all the tools)
+    result = await jarvis_agent.process_query(query)
+    return result, 0.85
+
+
+@router.post("/tiered", response_model=TieredOrchestResponse)
+async def orchestrate_tiered_query(request: TieredOrchestQuery):
+    """
+    4-Tier routing endpoint with query classification
+
+    Flow:
+    1. Classify query into tier (T1-T4) using rule-based classifier
+    2. Generate tier-appropriate acknowledgment
+    3. Route to appropriate handler:
+       - T1 (Conversational): Direct Claude Haiku, no tools
+       - T2 (Knowledge): Haiku + RAG (wiki/brain)
+       - T3 (Research): Sonnet + Web search
+       - T4 (Task): Full agent with tools
+    4. Return response with tier metadata
+
+    Latency targets:
+    - T1: <500ms (immediate)
+    - T2: 2-5s (quick lookup)
+    - T3: 5-10s (web search)
+    - T4: 10-90s (complex task)
+    """
+    import time
+    start_time = time.time()
+
+    try:
+        # 1. CLASSIFY QUERY
+        if request.force_tier:
+            # Manual override for testing
+            tier = QueryTier(request.force_tier)
+            confidence = 1.0
+            print(f"🎯 Forced tier: {tier}")
+        else:
+            # Automatic classification
+            tier, confidence = query_classifier.classify(request.query)
+            print(f"🎯 Classified as {tier} (confidence={confidence:.2f})")
+
+        # 2. GENERATE ACKNOWLEDGMENT
+        acknowledgment = generate_tier_acknowledgment(tier, request.query)
+
+        # 3. ROUTE TO HANDLER
+        if tier == QueryTier.CONVERSATIONAL:
+            answer, handler_confidence = await handle_conversational_query(
+                request.query,
+                request.conversation_id
+            )
+            path = "direct"
+
+        elif tier == QueryTier.KNOWLEDGE:
+            answer, handler_confidence = await handle_knowledge_query(
+                request.query,
+                request.conversation_id
+            )
+            path = "rag"
+
+        elif tier == QueryTier.RESEARCH:
+            answer, handler_confidence = await handle_research_query(
+                request.query,
+                request.conversation_id
+            )
+            path = "web"
+
+        elif tier == QueryTier.TASK:
+            # For complex tasks, consider background mode
+            query_lower = request.query.lower()
+            is_very_complex = any(word in query_lower for word in [
+                "analyze all", "write a detailed", "create a comprehensive",
+                "research and", "build a", "implement"
+            ])
+
+            if is_very_complex:
+                # Background mode for very long tasks
+                task = task_store.create(request.query)
+                asyncio.create_task(_run_agent_task(task.task_id, request.query))
+
+                latency_ms = int((time.time() - start_time) * 1000)
+
+                return TieredOrchestResponse(
+                    answer=acknowledgment or "I'll work on that now and get back to you",
+                    tier=tier.value,
+                    confidence=confidence,
+                    path="agent_background",
+                    latency_ms=latency_ms,
+                    conversation_id=request.conversation_id,
+                    acknowledgment=acknowledgment,
+                    needs_background=True,
+                    task_id=task.task_id
+                )
+            else:
+                # Synchronous agent for reasonable tasks
+                answer, handler_confidence = await handle_task_query(
+                    request.query,
+                    request.conversation_id
+                )
+                path = "agent"
+
+        else:
+            raise ValueError(f"Unknown tier: {tier}")
+
+        # 4. RETURN RESPONSE
+        latency_ms = int((time.time() - start_time) * 1000)
+
+        print(f"✅ Tier {tier} completed in {latency_ms}ms (path={path})")
+
+        return TieredOrchestResponse(
+            answer=answer,
+            tier=tier.value,
+            confidence=confidence,
+            path=path,
+            latency_ms=latency_ms,
+            conversation_id=request.conversation_id,
+            acknowledgment=acknowledgment,
+            needs_background=False
+        )
+
+    except Exception as e:
+        latency_ms = int((time.time() - start_time) * 1000)
+        print(f"❌ Tiered orchestration error: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Tiered orchestration failed: {str(e)}"
+        )
+
+
+@router.post("/tiered/stream")
+async def orchestrate_tiered_stream(request: TieredOrchestQuery):
+    """
+    Streaming 4-Tier routing endpoint with immediate acknowledgment
+
+    Server-Sent Events (SSE) flow:
+    1. event: tier → Classification result (tier, confidence)
+    2. event: ack → Immediate acknowledgment for TTS (if tier > T1)
+    3. event: chunk → Response text as it arrives
+    4. event: done → Final completion with metadata
+
+    This enables natural conversation flow:
+    - T1: Immediate response (no ack needed)
+    - T2: "Let me look that up..." → result
+    - T3: "Let me search for that..." → result
+    - T4: "I'll complete that for you..." → result
+    """
+    async def event_generator() -> AsyncGenerator[str, None]:
+        import time
+        start_time = time.time()
+
+        try:
+            # 1. CLASSIFY QUERY
+            if request.force_tier:
+                tier = QueryTier(request.force_tier)
+                confidence = 1.0
+            else:
+                tier, confidence = query_classifier.classify(request.query)
+
+            print(f"🎯 Stream classified as {tier} (confidence={confidence:.2f})")
+
+            # Send tier classification
+            yield f"event: tier\n"
+            yield f"data: {json.dumps({'tier': tier.value, 'confidence': confidence})}\n\n"
+
+            # 2. GENERATE AND SEND ACKNOWLEDGMENT (if needed)
+            acknowledgment = generate_tier_acknowledgment(tier, request.query)
+            if acknowledgment:
+                yield f"event: ack\n"
+                yield f"data: {json.dumps({'text': acknowledgment})}\n\n"
+
+            # 3. PROCESS QUERY
+            if tier == QueryTier.CONVERSATIONAL:
+                answer, handler_confidence = await handle_conversational_query(
+                    request.query,
+                    request.conversation_id
+                )
+                path = "direct"
+
+            elif tier == QueryTier.KNOWLEDGE:
+                answer, handler_confidence = await handle_knowledge_query(
+                    request.query,
+                    request.conversation_id
+                )
+                path = "rag"
+
+            elif tier == QueryTier.RESEARCH:
+                answer, handler_confidence = await handle_research_query(
+                    request.query,
+                    request.conversation_id
+                )
+                path = "web"
+
+            elif tier == QueryTier.TASK:
+                # Check if very complex (needs background)
+                query_lower = request.query.lower()
+                is_very_complex = any(word in query_lower for word in [
+                    "analyze all", "write a detailed", "create a comprehensive",
+                    "research and", "build a", "implement"
+                ])
+
+                if is_very_complex:
+                    # Background mode
+                    task = task_store.create(request.query)
+                    asyncio.create_task(_run_agent_task(task.task_id, request.query))
+
+                    # Send background notification
+                    yield f"event: background\n"
+                    yield f"data: {json.dumps({'task_id': task.task_id, 'message': 'Working on this in the background'})}\n\n"
+
+                    latency_ms = int((time.time() - start_time) * 1000)
+
+                    # Send done event
+                    yield f"event: done\n"
+                    yield f"data: {json.dumps({
+                        'tier': tier.value,
+                        'path': 'agent_background',
+                        'latency_ms': latency_ms,
+                        'needs_background': True,
+                        'task_id': task.task_id
+                    })}\n\n"
+
+                    return
+
+                else:
+                    # Synchronous task
+                    answer, handler_confidence = await handle_task_query(
+                        request.query,
+                        request.conversation_id
+                    )
+                    path = "agent"
+
+            else:
+                raise ValueError(f"Unknown tier: {tier}")
+
+            # 4. STREAM RESPONSE
+            # For now, send full response (future: implement true streaming)
+            yield f"event: chunk\n"
+            yield f"data: {json.dumps({'text': answer})}\n\n"
+
+            # 5. FINAL COMPLETION
+            latency_ms = int((time.time() - start_time) * 1000)
+
+            yield f"event: done\n"
+            yield f"data: {json.dumps({
+                'answer': answer,
+                'tier': tier.value,
+                'confidence': confidence,
+                'path': path,
+                'latency_ms': latency_ms,
+                'conversation_id': request.conversation_id
+            })}\n\n"
+
+            print(f"✅ Tier {tier} stream completed in {latency_ms}ms (path={path})")
+
+        except Exception as e:
+            # Error event
+            yield f"event: error\n"
+            yield f"data: {json.dumps({'message': str(e)})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
         }
     )
