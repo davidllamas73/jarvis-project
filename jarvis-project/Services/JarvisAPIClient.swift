@@ -6,7 +6,11 @@ class JarvisAPIClient: ObservableObject {
 
     // MARK: - Configuration
 
-    private let baseURL: String
+    // internal (not private): read from the JarvisAPIClient extension in
+    // ConversationOrchestrator.swift, a different file - Swift's `private`
+    // is file-scoped, not type-scoped, so an extension elsewhere in the same
+    // module can't see a private member even on the type it's extending.
+    let baseURL: String
     @Published var isAuthenticated = false
     @Published var connectionStatus: ConnectionStatus = .disconnected
 
