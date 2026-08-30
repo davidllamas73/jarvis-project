@@ -106,7 +106,12 @@ class WakeWordManager: NSObject, ObservableObject {
             // guard would silently no-op the retry in that case.
             print("❌ WakeWordManager: audio session failed to configure: \(error)")
             consecutiveFailures += 1
-            let backoffSeconds = min(Double(1 << consecutiveFailures), 10.0)
+            // Cap the shift amount itself, not just the final result - 1 << N
+        // overflows Int once consecutiveFailures climbs past ~62 (a real
+        // scenario when a failure is persistent, not transient, and keeps
+        // incrementing this every retry), crashing with a fatal trap when the
+        // negative overflowed value is then force-converted to UInt64 below.
+        let backoffSeconds = min(Double(1 << min(consecutiveFailures, 10)), 10.0)
             Task { @MainActor [weak self] in
                 try? await Task.sleep(nanoseconds: UInt64(backoffSeconds * 1_000_000_000))
                 guard let self, !self.isSuspended else { return }
@@ -235,7 +240,12 @@ class WakeWordManager: NSObject, ObservableObject {
         isTransitioning = true
 
         // Exponential backoff: 1s, 2s, 4s, 8s, capped at 10s
-        let backoffSeconds = min(Double(1 << consecutiveFailures), 10.0)
+        // Cap the shift amount itself, not just the final result - 1 << N
+        // overflows Int once consecutiveFailures climbs past ~62 (a real
+        // scenario when a failure is persistent, not transient, and keeps
+        // incrementing this every retry), crashing with a fatal trap when the
+        // negative overflowed value is then force-converted to UInt64 below.
+        let backoffSeconds = min(Double(1 << min(consecutiveFailures, 10)), 10.0)
         print("⏳ WakeWordManager: backing off \(backoffSeconds)s before retry (failure #\(consecutiveFailures))")
 
         try? await Task.sleep(nanoseconds: UInt64(backoffSeconds * 1_000_000_000))
