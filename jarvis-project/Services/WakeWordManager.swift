@@ -28,6 +28,9 @@ class WakeWordManager: NSObject, ObservableObject {
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
 
+    // Audio format converter for resampling mic input to 16kHz (SFSpeechRecognizer's expected rate)
+    private var audioConverter: AVAudioConverter?
+
     /// Whether the query-capturing recognizer currently owns the mic.
     /// While true, the wake-word listener stays paused to avoid contention.
     private var isSuspended = false
@@ -121,19 +124,60 @@ class WakeWordManager: NSObject, ObservableObject {
         }
 
         let inputNode = audioEngine.inputNode
-        let format = inputNode.outputFormat(forBus: 0)
+        let inputFormat = inputNode.outputFormat(forBus: 0)
 
         // A zero-channel format means the audio session isn't actually active yet -
         // installTap with an invalid format crashes AVAudioEngine with an uncatchable
         // NSException rather than a throwable error, so this guard is load-bearing.
-        guard format.channelCount > 0, format.sampleRate > 0 else {
-            print("❌ WakeWordManager: invalid input format (\(format)), aborting session")
+        guard inputFormat.channelCount > 0, inputFormat.sampleRate > 0 else {
+            print("❌ WakeWordManager: invalid input format (\(inputFormat)), aborting session")
             return
         }
 
+        // SFSpeechRecognizer expects 16kHz mono audio. If the mic outputs a different
+        // sample rate (e.g., 48kHz on some Macs), we need to convert.
+        let targetFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
+
+        // Create converter if sample rates differ
+        if inputFormat.sampleRate != targetFormat.sampleRate {
+            audioConverter = AVAudioConverter(from: inputFormat, to: targetFormat)
+        } else {
+            audioConverter = nil
+        }
+
         inputNode.removeTap(onBus: 0)
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
-            self?.recognitionRequest?.append(buffer)
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
+            guard let self = self else { return }
+
+            // Convert to 16kHz if needed
+            if let converter = self.audioConverter {
+                // Calculate output buffer capacity based on sample rate ratio
+                let ratio = targetFormat.sampleRate / inputFormat.sampleRate
+                let outputCapacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio)
+
+                guard let convertedBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: outputCapacity) else {
+                    print("❌ WakeWordManager: failed to create converted buffer")
+                    return
+                }
+
+                var error: NSError?
+                let inputBlock: AVAudioConverterInputBlock = { inNumPackets, outStatus in
+                    outStatus.pointee = .haveData
+                    return buffer
+                }
+
+                converter.convert(to: convertedBuffer, error: &error, withInputFrom: inputBlock)
+
+                if let error = error {
+                    print("❌ WakeWordManager: conversion error: \(error)")
+                    return
+                }
+
+                self.recognitionRequest?.append(convertedBuffer)
+            } else {
+                // No conversion needed - sample rates match
+                self.recognitionRequest?.append(buffer)
+            }
         }
 
         do {
