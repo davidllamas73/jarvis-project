@@ -283,6 +283,22 @@ class JarvisAPIClient: ObservableObject {
 
         return try await makeRequest(endpoint: "/voice/synthesize", method: "POST", body: body)
     }
+
+    // MARK: - V2 Classifier
+
+    func classifyV2(query: String, enableLlm: Bool = false) async throws -> ClassifyV2Response {
+        let request = ClassifyV2Request(query: query, enableLlm: enableLlm)
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        let body = try encoder.encode(request)
+
+        return try await makeRequest(
+            endpoint: "/orchestrate/classify-v2",
+            method: "POST",
+            body: body,
+            requiresAuth: false
+        )
+    }
 }
 
 // MARK: - Errors

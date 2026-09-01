@@ -83,9 +83,9 @@ class ConversationOrchestrator: ObservableObject {
     /// Process user query with immediate acknowledgment and background execution.
     ///
     /// Flow:
-    /// 1. Immediate acknowledgment (<500ms TTS)
-    /// 2. Background processing (potentially 10-15s)
-    /// 3. Optional progress update (if >8s)
+    /// 1. Classify with V2 (fast, accurate)
+    /// 2. Immediate acknowledgment (<500ms TTS)
+    /// 3. Route to appropriate handler based on tier
     /// 4. Speak final response
     /// 5. Return to idle
     ///
@@ -95,7 +95,7 @@ class ConversationOrchestrator: ObservableObject {
         cancel()
 
         // Update state
-        state = .acknowledged
+        state = .listening
         isProcessing = true
         currentResponse = ""
 
@@ -105,8 +105,8 @@ class ConversationOrchestrator: ObservableObject {
         // Create new processing task
         currentTask = Task {
             do {
-                // Use SSE streaming endpoint for immediate acknowledgment
-                try await processWithSSE(query: query, sessionId: sessionId)
+                // Use V2 classification for better routing
+                try await processWithV2Classification(query: query, sessionId: sessionId)
 
                 // Success - return to idle
                 await MainActor.run {
@@ -138,7 +138,143 @@ class ConversationOrchestrator: ObservableObject {
         await currentTask?.value
     }
 
+    /// Process query with V2 classification for better routing.
+    private func processWithV2Classification(query: String, sessionId: String) async throws {
+        guard !Task.isCancelled else { throw CancellationError() }
+
+        // 1. Classify with V2 (for better accuracy and performance)
+        let classification: ClassifyV2Response
+        do {
+            classification = try await apiClient.classifyV2(query: query, enableLlm: false)
+            print("📊 V2 Classification: tier=\(classification.tier), confidence=\(classification.confidence), method=\(classification.method), latency=\(classification.latencyMs)ms")
+        } catch {
+            print("⚠️ V2 classification failed: \(error), falling back to V1")
+            // Fallback to old /tiered endpoint if V2 fails
+            try await processWithSSE(query: query, sessionId: sessionId)
+            return
+        }
+
+        // 2. Immediate acknowledgment for all queries
+        let ack = generateAcknowledgmentV2(for: classification.tier)
+        state = .acknowledged
+        try await speakImmediate(ack)
+
+        guard !Task.isCancelled else { throw CancellationError() }
+
+        // 3. Route based on tier
+        state = .processing
+        switch classification.tier {
+        case "conversational":
+            // Fast path - simple greeting/chat
+            try await handleConversationalQuery(query, classification: classification, sessionId: sessionId)
+        case "knowledge":
+            // RAG path - search second brain
+            try await handleKnowledgeQuery(query, classification: classification, sessionId: sessionId)
+        case "research":
+            // Web search path (background task)
+            try await handleResearchQuery(query, classification: classification, sessionId: sessionId)
+        case "task":
+            // Agent path - tool use
+            try await handleTaskQuery(query, classification: classification, sessionId: sessionId)
+        default:
+            print("⚠️ Unknown tier: \(classification.tier), using default handler")
+            try await handleKnowledgeQuery(query, classification: classification, sessionId: sessionId)
+        }
+    }
+
+    /// Generate tier-specific acknowledgment for V2 classifier.
+    private func generateAcknowledgmentV2(for tier: String) -> String {
+        switch tier {
+        case "conversational":
+            return ["Sure", "Okay", "Yes"].randomElement() ?? "Sure"
+        case "knowledge":
+            return ["Let me check that", "Looking that up", "One moment"].randomElement() ?? "Let me check that"
+        case "research":
+            return ["I'll research that for you", "Let me look into that", "Researching now"].randomElement() ?? "I'll research that for you"
+        case "task":
+            return ["Running that now", "On it", "Starting that task"].randomElement() ?? "Running that now"
+        default:
+            return "Okay"
+        }
+    }
+
+    /// Handle conversational queries (greetings, simple chat).
+    private func handleConversationalQuery(_ query: String, classification: ClassifyV2Response, sessionId: String) async throws {
+        guard !Task.isCancelled else { throw CancellationError() }
+
+        // Simple conversational response - use chat endpoint for context
+        do {
+            let response = try await apiClient.chat(query: query)
+            currentResponse = response.answer
+            state = .speaking
+            try await speakResponse(response.answer)
+        } catch {
+            // Fallback to simple response if chat fails
+            currentResponse = "I'm here and ready to help!"
+            state = .speaking
+            try await speakResponse(currentResponse)
+        }
+    }
+
+    /// Handle knowledge queries (search second brain).
+    private func handleKnowledgeQuery(_ query: String, classification: ClassifyV2Response, sessionId: String) async throws {
+        guard !Task.isCancelled else { throw CancellationError() }
+
+        // Search second brain (existing RAG logic)
+        do {
+            let response = try await apiClient.chat(query: query)
+            currentResponse = response.answer
+            state = .speaking
+            try await speakResponse(response.answer)
+        } catch {
+            currentResponse = "I couldn't find information on that"
+            state = .speaking
+            try await speakResponse(currentResponse)
+        }
+    }
+
+    /// Handle research queries (web search - background task).
+    private func handleResearchQuery(_ query: String, classification: ClassifyV2Response, sessionId: String) async throws {
+        guard !Task.isCancelled else { throw CancellationError() }
+
+        // Web search requires background processing
+        // For now, route to task handler which supports background
+        try await handleTaskQuery(query, classification: classification, sessionId: sessionId)
+    }
+
+    /// Handle task queries (agent path with tool use).
+    private func handleTaskQuery(_ query: String, classification: ClassifyV2Response, sessionId: String) async throws {
+        guard !Task.isCancelled else { throw CancellationError() }
+
+        // Agent path with tool use - may be background or foreground
+        do {
+            // Use streaming for better UX
+            var fullAnswer = ""
+            for try await event in apiClient.executeCodeStream(query: query, sessionId: sessionId) {
+                switch event {
+                case .textDelta(let text):
+                    fullAnswer += text
+                    currentResponse = fullAnswer
+                    // Optionally speak chunks as they arrive in future
+                case .done(let response):
+                    currentResponse = response.answer
+                    state = .speaking
+                    try await speakResponse(response.answer)
+                case .error(let message):
+                    currentResponse = "Error: \(message)"
+                    state = .speaking
+                    try await speakResponse(currentResponse)
+                }
+            }
+        } catch {
+            currentResponse = "Task execution failed: \(error.localizedDescription)"
+            state = .speaking
+            try await speakResponse(currentResponse)
+        }
+    }
+
     /// Process query using SSE streaming endpoint with immediate acknowledgment.
+    /// This is the V1 fallback path - kept for backward compatibility.
     private func processWithSSE(query: String, sessionId: String) async throws {
         guard !Task.isCancelled else { throw CancellationError() }
 

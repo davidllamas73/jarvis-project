@@ -211,6 +211,40 @@ struct AnyCodable: Codable {
         }
     }
 }
+// MARK: - V2 Classifier Models
+
+struct ClassifyV2Request: Codable {
+    let query: String
+    let enableLlm: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case query
+        case enableLlm = "enable_llm"
+    }
+}
+
+struct ClassifyV2Response: Codable {
+    let query: String
+    let tier: String
+    let confidence: Double
+    let method: String
+    let latencyMs: Double
+    let reasoning: String?
+    let alternativeTier: String?
+    let similarityScores: [String: Double]?
+
+    enum CodingKeys: String, CodingKey {
+        case query
+        case tier
+        case confidence
+        case method
+        case latencyMs = "latency_ms"
+        case reasoning
+        case alternativeTier = "alternative_tier"
+        case similarityScores = "similarity_scores"
+    }
+}
+
 // MARK: - Code Execution Models
 
 struct FileAttachment: Codable {
