@@ -32,8 +32,10 @@ final class ChatStore: ObservableObject {
     private var speechTask: Task<Void, Never>?
     private var pendingSave: Task<Void, Never>?
 
-    init(tts: NativeTTSManager = NativeTTSManager()) {
-        self.tts = tts
+    /// tts is optional rather than defaulted: a default argument is evaluated in a
+    /// nonisolated context and can't call NativeTTSManager's main-actor init.
+    init(tts: NativeTTSManager? = nil) {
+        self.tts = tts ?? NativeTTSManager()
         self.conversations = ConversationPersistence.load()
             .sorted { $0.updatedAt > $1.updatedAt }
         self.selectedID = conversations.first?.id
