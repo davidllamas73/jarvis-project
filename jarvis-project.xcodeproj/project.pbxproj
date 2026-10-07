@@ -12,13 +12,23 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		F35A3AED303436CF00B08044 /* Exceptions for "JarvisiOS" folder in "JarvisiOS" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = F367546F3030A09200D02B8F /* JarvisiOS */;
+		};
 		F367547C3030A28500D02B8F /* Exceptions for "jarvis-project" folder in "JarvisiOS" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Models/APIModels.swift,
 				Services/AudioSessionManager.swift,
+				Services/BargeInDetector.swift,
+				Services/ConversationOrchestrator.swift,
 				Services/JarvisAPIClient.swift,
 				Services/NativeTTSManager.swift,
+				Services/SemanticEndpointDetector.swift,
 				"Services/SpeechRecognitionManager-Simple.swift",
 				Services/WakeWordManager.swift,
 			);
@@ -34,6 +44,9 @@
 		};
 		F36754713030A09200D02B8F /* JarvisiOS */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				F35A3AED303436CF00B08044 /* Exceptions for "JarvisiOS" folder in "JarvisiOS" target */,
+			);
 			path = JarvisiOS;
 			sourceTree = "<group>";
 		};
@@ -213,8 +226,10 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = TM3U44ZZ2L;
 				ENABLE_PREVIEWS = YES;
-				GENERATE_INFOPLIST_FILE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = JarvisiOS/Info.plist;
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Jarvis needs microphone access to listen to your voice";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Jarvis needs speech recognition access to understand voice commands";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -248,8 +263,10 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = TM3U44ZZ2L;
 				ENABLE_PREVIEWS = YES;
-				GENERATE_INFOPLIST_FILE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = JarvisiOS/Info.plist;
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Jarvis needs microphone access to listen to your voice";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Jarvis needs speech recognition access to understand voice commands";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -399,6 +416,7 @@
 				CODE_SIGN_ENTITLEMENTS = "jarvis-project/Jarvis.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = TM3U44ZZ2L;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_FILE_ACCESS_DOWNLOADS_FOLDER = readwrite;
 				ENABLE_FILE_ACCESS_MOVIES_FOLDER = readwrite;
@@ -458,6 +476,7 @@
 				CODE_SIGN_ENTITLEMENTS = "jarvis-project/Jarvis.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = TM3U44ZZ2L;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_FILE_ACCESS_DOWNLOADS_FOLDER = readwrite;
 				ENABLE_FILE_ACCESS_MOVIES_FOLDER = readwrite;
