@@ -331,6 +331,20 @@ final class ChatStore: ObservableObject {
             }
         }
         if let apiError = error as? APIError, let description = apiError.errorDescription {
+            // The server relays raw Claude API errors; translate the common ones.
+            let lower = description.lowercased()
+            if lower.contains("credit balance") {
+                return "Jarvis's Claude API credits have run out. Top up at console.anthropic.com → Plans & Billing."
+            }
+            if lower.contains("overloaded") || lower.contains("529") {
+                return "Claude is overloaded right now. Retry in a moment."
+            }
+            if lower.contains("rate_limit") || lower.contains("429") {
+                return "Too many requests to Claude. Wait a few seconds and retry."
+            }
+            if lower.contains("authentication") || lower.contains("401") {
+                return "The Jarvis server's Claude API key is invalid. Check the server config."
+            }
             return description
         }
         return error.localizedDescription
