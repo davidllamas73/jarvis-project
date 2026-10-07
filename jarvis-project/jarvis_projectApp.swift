@@ -47,6 +47,7 @@ struct jarvis_projectApp: App {
         Settings {
             JarvisSettingsView()
                 .environmentObject(store)
+                .environmentObject(voice)
         }
 
         MenuBarExtra("Jarvis", systemImage: "sparkles") {

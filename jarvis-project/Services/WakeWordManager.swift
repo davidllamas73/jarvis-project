@@ -14,13 +14,16 @@ import Combine
 class WakeWordManager: NSObject, ObservableObject {
     @Published var isAwake = false
     @Published var isListeningForWakeWord = false
+    /// Human-readable state for the Settings screen, so it's visible on device
+    /// whether the listener is actually running or why it isn't.
+    @Published private(set) var statusMessage = "Not started"
 
     /// Called when the wake phrase is heard.
     var onWake: (() -> Void)?
     /// Called when a sleep phrase is heard.
     var onSleep: (() -> Void)?
 
-    private let wakePhrases = ["hey jarvis"]
+    private let wakePhrases = ["hey jarvis", "hi jarvis", "okay jarvis", "ok jarvis"]
     private let sleepPhrases = ["thank you jarvis", "thanks jarvis", "bye jarvis", "goodbye jarvis"]
 
     private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
@@ -28,12 +31,14 @@ class WakeWordManager: NSObject, ObservableObject {
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
 
-    // Audio format converter for resampling mic input to 16kHz (SFSpeechRecognizer's expected rate)
-    private var audioConverter: AVAudioConverter?
-
     /// Whether the query-capturing recognizer currently owns the mic.
     /// While true, the wake-word listener stays paused to avoid contention.
     private var isSuspended = false
+
+    /// True while startListening() is awaiting authorization. Without it, the
+    /// app-launch .task and the scenePhase .active handler both start a session
+    /// and their failure retries run as two parallel loops.
+    private var isStarting = false
 
     /// Mutex guard to prevent concurrent session transitions that would create
     /// CoreAudio HAL lock contention. Only one endSession()+beginSession() cycle
@@ -51,14 +56,18 @@ class WakeWordManager: NSObject, ObservableObject {
 
     /// Begin continuous background listening for wake/sleep phrases.
     func startListening() {
-        guard !isListeningForWakeWord, !isSuspended else { return }
+        guard !isListeningForWakeWord, !isSuspended, !isStarting else { return }
+        isStarting = true
 
         Task {
             let authorized = await requestAuthorization()
+            isStarting = false
             guard authorized else {
                 print("❌ WakeWordManager: not authorized")
+                statusMessage = "Microphone or speech permission denied"
                 return
             }
+            guard !isSuspended, !isListeningForWakeWord else { return }
             beginSession()
         }
     }
@@ -68,6 +77,7 @@ class WakeWordManager: NSObject, ObservableObject {
         restartTimer = nil
         endSession()
         isListeningForWakeWord = false
+        statusMessage = "Stopped"
     }
 
     /// Pause wake-word listening while the app records/transcribes an actual query,
@@ -76,6 +86,7 @@ class WakeWordManager: NSObject, ObservableObject {
         isSuspended = true
         endSession()
         isListeningForWakeWord = false
+        statusMessage = "Paused while you talk"
     }
 
     func resumeAfterActiveQuery() {
@@ -88,12 +99,20 @@ class WakeWordManager: NSObject, ObservableObject {
     private func beginSession() {
         guard let speechRecognizer, speechRecognizer.isAvailable else {
             print("❌ WakeWordManager: recognizer unavailable")
+            statusMessage = "Speech recognizer unavailable"
             return
         }
 
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
-        request.requiresOnDeviceRecognition = true // keep wake-word audio on-device
+        // Keep wake-word audio on-device when the phone has the en-US model.
+        // Forcing it on a device WITHOUT the model makes every session fail
+        // instantly, so the listener restarts forever and never hears anything.
+        let onDevice = speechRecognizer.supportsOnDeviceRecognition
+        request.requiresOnDeviceRecognition = onDevice
+        if !onDevice {
+            print("⚠️ WakeWordManager: no on-device en-US model, using server recognition")
+        }
         recognitionRequest = request
 
         do {
@@ -108,6 +127,7 @@ class WakeWordManager: NSObject, ObservableObject {
             // restartSessionIfNeeded() further up the call stack, and that
             // guard would silently no-op the retry in that case.
             print("❌ WakeWordManager: audio session failed to configure: \(error)")
+            statusMessage = "Mic unavailable, retrying (\((error as NSError).code))"
             consecutiveFailures += 1
             // Cap the shift amount itself, not just the final result - 1 << N
         // overflows Int once consecutiveFailures climbs past ~62 (a real
@@ -134,50 +154,16 @@ class WakeWordManager: NSObject, ObservableObject {
             return
         }
 
-        // SFSpeechRecognizer expects 16kHz mono audio. If the mic outputs a different
-        // sample rate (e.g., 48kHz on some Macs), we need to convert.
-        let targetFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
-
-        // Create converter if sample rates differ
-        if inputFormat.sampleRate != targetFormat.sampleRate {
-            audioConverter = AVAudioConverter(from: inputFormat, to: targetFormat)
-        } else {
-            audioConverter = nil
-        }
-
+        // Append buffers in the mic's native format. SFSpeechAudioBufferRecognitionRequest
+        // accepts any PCM format, so no resampling is needed. The previous 16kHz
+        // AVAudioConverter fed the SAME buffer back on every input-block call
+        // (always .haveData), duplicating audio and garbling it - on iPhone (48kHz
+        // mic) that path ran for every buffer, so "Hey Jarvis" was never recognized.
+        // Tapping with inputFormat (not a fixed format) is what fixed the original
+        // "format mismatch" crash and is kept.
         inputNode.removeTap(onBus: 0)
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
-            guard let self = self else { return }
-
-            // Convert to 16kHz if needed
-            if let converter = self.audioConverter {
-                // Calculate output buffer capacity based on sample rate ratio
-                let ratio = targetFormat.sampleRate / inputFormat.sampleRate
-                let outputCapacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio)
-
-                guard let convertedBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: outputCapacity) else {
-                    print("❌ WakeWordManager: failed to create converted buffer")
-                    return
-                }
-
-                var error: NSError?
-                let inputBlock: AVAudioConverterInputBlock = { inNumPackets, outStatus in
-                    outStatus.pointee = .haveData
-                    return buffer
-                }
-
-                converter.convert(to: convertedBuffer, error: &error, withInputFrom: inputBlock)
-
-                if let error = error {
-                    print("❌ WakeWordManager: conversion error: \(error)")
-                    return
-                }
-
-                self.recognitionRequest?.append(convertedBuffer)
-            } else {
-                // No conversion needed - sample rates match
-                self.recognitionRequest?.append(buffer)
-            }
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { buffer, _ in
+            request.append(buffer)
         }
 
         do {
@@ -189,6 +175,7 @@ class WakeWordManager: NSObject, ObservableObject {
         }
 
         isListeningForWakeWord = true
+        statusMessage = onDevice ? "Listening (on-device)" : "Listening (Apple servers)"
         lastSessionStartTime = Date()
 
         recognitionTask = speechRecognizer.recognitionTask(with: request) { [weak self] result, error in
@@ -300,7 +287,14 @@ class WakeWordManager: NSObject, ObservableObject {
 
     // MARK: - Phrase matching
 
-    private func evaluate(_ heard: String) {
+    private func evaluate(_ rawHeard: String) {
+        // Normalize: the recognizer may return "Hey, Jarvis." - strip punctuation
+        // and collapse whitespace so it still matches "hey jarvis".
+        let heard = rawHeard
+            .components(separatedBy: CharacterSet.letters.union(.whitespaces).inverted)
+            .joined()
+            .split(separator: " ")
+            .joined(separator: " ")
         if !isAwake, wakePhrases.contains(where: { heard.contains($0) }) {
             isAwake = true
             print("👋 Wake phrase detected")

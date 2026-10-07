@@ -4,6 +4,7 @@ import SwiftUI
 /// Named JarvisSettingsView to avoid clashing with the legacy SettingsView in archives.
 struct JarvisSettingsView: View {
     @EnvironmentObject private var store: ChatStore
+    @EnvironmentObject private var voice: VoiceController
     @AppStorage("autoSpeakTyped") private var autoSpeakTyped = false
     @AppStorage("autoSpeakVoice") private var autoSpeakVoice = true
     @AppStorage("wakeWordEnabled") private var wakeWordEnabled = true
@@ -16,6 +17,12 @@ struct JarvisSettingsView: View {
                 Toggle("Read answers aloud in voice mode", isOn: $autoSpeakVoice)
                 Toggle("Read typed answers aloud", isOn: $autoSpeakTyped)
                 Toggle("Listen for \u{201C}Hey Jarvis\u{201D}", isOn: $wakeWordEnabled)
+                    .onChange(of: wakeWordEnabled) { _, enabled in
+                        if enabled { voice.startWakeWord() } else { voice.stopWakeWord() }
+                    }
+                if wakeWordEnabled {
+                    WakeWordStatusRow(wakeWord: voice.wakeWord)
+                }
                 #if os(iOS)
                 Text("The wake word only works while Jarvis is open on screen. iOS doesn't allow apps to listen in the background.")
                     .font(.footnote)
@@ -63,5 +70,23 @@ struct JarvisSettingsView: View {
             Text("This removes every conversation from this device.")
         }
         .task { await store.refreshConnection() }
+    }
+}
+
+/// Live wake-word listener state, observed directly so it updates in place.
+private struct WakeWordStatusRow: View {
+    @ObservedObject var wakeWord: WakeWordManager
+
+    var body: some View {
+        LabeledContent("Wake word status") {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(wakeWord.isListeningForWakeWord ? Color.green : Color.orange)
+                    .frame(width: 7, height: 7)
+                Text(wakeWord.statusMessage)
+                    .foregroundStyle(.secondary)
+            }
+            .font(.caption)
+        }
     }
 }

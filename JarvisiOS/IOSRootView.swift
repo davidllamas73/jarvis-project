@@ -51,6 +51,7 @@ struct IOSRootView: View {
                 JarvisSettingsView()
             }
             .environmentObject(store)
+            .environmentObject(voice)
         }
         .task {
             await store.refreshConnection()
