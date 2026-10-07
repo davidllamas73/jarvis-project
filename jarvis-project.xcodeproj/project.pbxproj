@@ -16,6 +16,7 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Models/APIModels.swift,
+				Services/AudioSessionManager.swift,
 				Services/JarvisAPIClient.swift,
 				Services/NativeTTSManager.swift,
 				"Services/SpeechRecognitionManager-Simple.swift",
@@ -26,6 +27,11 @@
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		F3A1B2C33040000000D0AA01 /* JarvisShared */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = JarvisShared;
+			sourceTree = "<group>";
+		};
 		F36754713030A09200D02B8F /* JarvisiOS */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = JarvisiOS;
@@ -64,6 +70,7 @@
 			children = (
 				F368C35E3025D4CE00D7B4E9 /* jarvis-project */,
 				F36754713030A09200D02B8F /* JarvisiOS */,
+				F3A1B2C33040000000D0AA01 /* JarvisShared */,
 				F368C35D3025D4CE00D7B4E9 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -94,6 +101,7 @@
 			);
 			fileSystemSynchronizedGroups = (
 				F36754713030A09200D02B8F /* JarvisiOS */,
+				F3A1B2C33040000000D0AA01 /* JarvisShared */,
 			);
 			name = JarvisiOS;
 			packageProductDependencies = (
@@ -116,6 +124,7 @@
 			);
 			fileSystemSynchronizedGroups = (
 				F368C35E3025D4CE00D7B4E9 /* jarvis-project */,
+				F3A1B2C33040000000D0AA01 /* JarvisShared */,
 			);
 			name = "jarvis-project";
 			packageProductDependencies = (
