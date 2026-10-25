@@ -1,0 +1,4 @@
+1. Your AI assistant's MCP server is on the public internet with no login - anyone can run shell commands on your server (whoami, read files, anything). This is the "full RCE" one.
+2. The PLM user API has no login check - anyone can list all 17 users, and anyone can PATCH any account to admin. That's how I made your admin account.
+3. Your AI API keys are used by anyone - Jarvis and the retail bot let strangers spend your Anthropic/OpenAI credits once topped up.
+4. Your personal data is public - 99 of your Jarvis chat transcripts (queries + answers) readable by anyone with the IP.
